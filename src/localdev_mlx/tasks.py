@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import tempfile
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 
-from localdev_mlx.config import project_state_dir
+from localdev_mlx.config import canonical_repository, project_state_dir
 from localdev_mlx.schemas import ExternalReviewState, TaskKind, TaskRecord
 
 
 class TaskStore:
     def __init__(self, repository: Path) -> None:
-        self.repository = repository.resolve()
+        self.repository = canonical_repository(repository)
         self.root = project_state_dir(self.repository) / "tasks"
         self.root.mkdir(parents=True, exist_ok=True)
 
@@ -40,18 +43,36 @@ class TaskStore:
             repository=str(self.repository),
             worker=worker,
         )
+        while True:
+            try:
+                self.path(task.id).mkdir()
+                break
+            except FileExistsError:
+                task.id = self.new_id(kind)
         self.save(task)
         return task
 
     def path(self, task_id: str) -> Path:
-        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", task_id)
-        return self.root / safe
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task_id):
+            raise ValueError(f"Invalid task ID: {task_id!r}")
+        return self.root / task_id
 
     def save(self, task: TaskRecord) -> None:
+        if task.schema_version > 2:
+            raise ValueError("Refusing to overwrite a task from a newer schema")
         directory = self.path(task.id)
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / "task.json"
-        temporary = target.with_suffix(".tmp")
+        if target.exists():
+            raw = json.loads(target.read_text(encoding="utf-8"))
+            if raw.get("schema_version", 1) > 2:
+                raise ValueError("Refusing to overwrite a task from a newer schema")
+            backup = target.with_suffix(".v1.bak")
+            if raw.get("schema_version", 1) < 2 and not backup.exists():
+                shutil.copy2(target, backup)
+        task.schema_version = 2
+        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+            temporary = Path(handle.name)
         temporary.write_text(task.model_dump_json(indent=2), encoding="utf-8")
         temporary.replace(target)
 
@@ -66,10 +87,10 @@ class TaskStore:
         for path in sorted(self.root.glob("*/task.json"), reverse=True):
             try:
                 tasks.append(TaskRecord.model_validate_json(path.read_text(encoding="utf-8")))
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                warnings.warn(f"Cannot read task {path}: {exc}", stacklevel=2)
                 continue
         return tasks
-
 
     def open_external(self) -> list[TaskRecord]:
         """Return unresolved tasks that need a human or stronger model."""

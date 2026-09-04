@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from localdev_mlx.config import ModelProfile
+from localdev_mlx.execution.budget import deadline
 from localdev_mlx.providers.base import ProviderError, StructuredProvider
 
 T = TypeVar("T", bound=BaseModel)
@@ -18,6 +19,7 @@ class MLXOpenAIProvider(StructuredProvider):
 
     def __init__(self, *, api_key: str = "local-not-required") -> None:
         self.api_key = api_key
+        self.last_metadata: dict[str, Any] = {}
 
     def list_models(self, profile: ModelProfile) -> list[str]:
         try:
@@ -31,11 +33,7 @@ class MLXOpenAIProvider(StructuredProvider):
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError(f"Unable to query MLX models: {exc}") from exc
         values = payload.get("data", []) if isinstance(payload, dict) else []
-        return [
-            str(item.get("id"))
-            for item in values
-            if isinstance(item, dict) and item.get("id")
-        ]
+        return [str(item.get("id")) for item in values if isinstance(item, dict) and item.get("id")]
 
     def complete_structured(
         self,
@@ -46,6 +44,7 @@ class MLXOpenAIProvider(StructuredProvider):
         response_model: type[T],
         schema_name: str,
     ) -> T:
+        self.last_metadata = {}
         schema = response_model.model_json_schema()
         payload: dict[str, Any] = {
             "model": profile.model,
@@ -68,14 +67,27 @@ class MLXOpenAIProvider(StructuredProvider):
             },
         }
         try:
-            with httpx.Client(
-                base_url=profile.base_url,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=httpx.Timeout(profile.request_timeout_seconds),
-            ) as client:
+            with (
+                deadline(profile.request_timeout_seconds, label=f"{schema_name} request"),
+                httpx.Client(
+                    base_url=profile.base_url,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=httpx.Timeout(
+                        connect=min(10, profile.request_timeout_seconds),
+                        read=profile.request_timeout_seconds,
+                        write=min(30, profile.request_timeout_seconds),
+                        pool=5,
+                    ),
+                    trust_env=False,
+                ) as client,
+            ):
                 response = client.post("/chat/completions", json=payload)
                 response.raise_for_status()
                 body = response.json()
+                self.last_metadata = {
+                    "usage": body.get("usage", {}),
+                    "finish_reason": body.get("choices", [{}])[0].get("finish_reason"),
+                }
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError(f"MLX completion failed: {exc}") from exc
 

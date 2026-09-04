@@ -45,6 +45,7 @@ def test_managed_state_is_authoritative_when_models_endpoint_lists_every_model(
         encoding="utf-8",
     )
     monkeypatch.setattr(manager, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(manager, "_owned", lambda _state: True)
     monkeypatch.setattr(manager, "_port_open", lambda _host, _port: True)
     monkeypatch.setattr(
         manager,
@@ -76,6 +77,7 @@ def test_ensure_switches_a_different_managed_profile(
         encoding="utf-8",
     )
     monkeypatch.setattr(manager, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(manager, "_owned", lambda _state: True)
     monkeypatch.setattr(manager, "_port_open", lambda _host, _port: True)
     calls: list[str] = []
     monkeypatch.setattr(manager, "stop", lambda: calls.append("stop"))
@@ -113,15 +115,15 @@ def _managed_state(manager: ModelManager) -> None:
     )
 
 
-def test_stop_signals_pid_and_accepts_closed_port_as_stopped(
+def test_stop_signals_verified_pid_and_waits_for_exit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _manager(tmp_path)
     _managed_state(manager)
     monkeypatch.setattr(manager, "_pid_alive", lambda _pid: True)
-    port_states = iter([True, False])
-    monkeypatch.setattr(manager, "_port_open", lambda _host, _port: next(port_states))
+    monkeypatch.setattr(manager, "_owned", lambda _state: True)
+    monkeypatch.setattr(manager, "_wait_until_stopped", lambda **_kwargs: True)
     monkeypatch.setattr("localdev_mlx.models.manager.httpx.post", lambda *_args, **_kwargs: None)
     signals: list[tuple[int, object]] = []
     monkeypatch.setattr(
@@ -162,6 +164,7 @@ def test_stop_escalates_to_sigkill_when_sigterm_does_not_stop_server(
     manager = _manager(tmp_path)
     _managed_state(manager)
     monkeypatch.setattr(manager, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(manager, "_owned", lambda _state: True)
     monkeypatch.setattr(manager, "_port_open", lambda _host, _port: True)
     monkeypatch.setattr("localdev_mlx.models.manager.httpx.post", lambda *_args, **_kwargs: None)
     waits = iter([False, True])

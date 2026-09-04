@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,7 +13,9 @@ from localdev_mlx.schemas import (
     ExternalReviewCategory,
     ExternalReviewState,
     FrontierBatchRecord,
+    FrontierBatchStatus,
     TaskKind,
+    TaskPhase,
     TaskRecord,
     TaskStatus,
 )
@@ -35,12 +38,22 @@ class FrontierStore:
         return candidate
 
     def path(self, batch_id: str) -> Path:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", batch_id):
+            raise ValueError("Invalid frontier batch ID")
         return self.root / batch_id
 
     def save(self, batch: FrontierBatchRecord) -> None:
+        if batch.schema_version > 2:
+            raise ValueError("Refusing to overwrite newer frontier schema")
         directory = self.path(batch.id)
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / "batch.json"
+        if target.exists():
+            raw = json.loads(target.read_text())
+            if raw.get("schema_version", 1) > 2:
+                raise ValueError("Refusing to overwrite newer frontier schema")
+            if raw.get("schema_version", 1) < 2 and not target.with_suffix(".v1.bak").exists():
+                shutil.copy2(target, target.with_suffix(".v1.bak"))
         temporary = target.with_suffix(".tmp")
         temporary.write_text(batch.model_dump_json(indent=2), encoding="utf-8")
         temporary.replace(target)
@@ -85,6 +98,7 @@ def defer_task(
     explanation = reason or "The user chose to defer this issue directly to external review."
     task.transition(TaskStatus.DEFERRED, explanation)
     task.mark_external_review(category=category, reason=explanation)
+    task.advance(TaskPhase.STOPPED, "Deferred without model inference")
     store.save(task)
 
     bundle, visible = build_escalation_bundle(
@@ -192,9 +206,7 @@ def build_frontier_batch(
     all_tasks = task_store.list()
     integration_commit = git.resolve_ref(integration, "HEAD")
     base_diff = (
-        git.diff_between(integration, config.base_branch, "HEAD")
-        if include_integrated
-        else ""
+        git.diff_between(integration, config.base_branch, "HEAD") if include_integrated else ""
     )
     open_markdown = _render_open_tasks(selected)
     integrated_markdown = (
@@ -228,9 +240,9 @@ Resolve the open external-review tasks listed in `OPEN_EXTERNAL_TASKS.md` agains
 
 1. `AGENTS.md`
 2. canonical files under `docs/ai/`
-3. `{bundle / 'OPEN_EXTERNAL_TASKS.md'}`
-4. `{bundle / 'INTEGRATED_LOCAL_TASKS.md'}`
-5. `{bundle / 'BASE_TO_INTEGRATION.patch'}`
+3. `{bundle / "OPEN_EXTERNAL_TASKS.md"}`
+4. `{bundle / "INTEGRATED_LOCAL_TASKS.md"}`
+5. `{bundle / "BASE_TO_INTEGRATION.patch"}`
 6. each relevant directory under `{issues_dir}`
 7. the latest source and tests in the repository
 
@@ -254,16 +266,12 @@ If an item remains unresolved, leave it open and document why instead of marking
 
     visible = git.root / ".localdev" / "runtime" / "frontier" / batch_id
     if visible.exists():
-        shutil.rmtree(visible)
-    visible.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(bundle, visible)
+        raise FileExistsError(f"Refusing to replace existing frontier export: {visible}")
 
     if destination:
         exported = destination.resolve()
         if exported.exists():
-            shutil.rmtree(exported)
-        exported.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(bundle, exported)
+            raise FileExistsError(f"Refusing to replace existing frontier export: {exported}")
 
     record = FrontierBatchRecord(
         id=batch_id,
@@ -293,9 +301,12 @@ If an item remains unresolved, leave it open and document why instead of marking
         json.dumps(manifest, indent=2),
         encoding="utf-8",
     )
-    # Refresh the visible copy after the manifest and batch record exist.
-    shutil.rmtree(visible)
+    # Copy only after the manifest and batch record exist.
+    visible.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(bundle, visible)
+    if destination:
+        exported.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(bundle, exported)
     return record
 
 
@@ -341,6 +352,10 @@ def resolve_frontier(
     task_store = TaskStore(git.root)
     for task_id in selected_ids:
         selected_task = task_store.load(task_id)
+        if selected_task.external_review_state == ExternalReviewState.NONE:
+            raise RuntimeError(
+                f"Task {task_id} is diagnostic, not an external-review item; reopen it explicitly first"
+            )
         if selected_task.base_commit and not git.is_ancestor(
             integration,
             selected_task.base_commit,
@@ -427,11 +442,7 @@ def supersede_frontier(
     )
 
     frontier_store = FrontierStore(git.root)
-    affected_batches = {
-        batch_id
-        for task in updated
-        for batch_id in task.frontier_batch_ids
-    }
+    affected_batches = {batch_id for task in updated for batch_id in task.frontier_batch_ids}
     completion_commit = resolved_commit or git.resolve_ref(integration, "HEAD")
     for batch_id in affected_batches:
         batch = frontier_store.load(batch_id)
@@ -476,8 +487,8 @@ def reopen_frontier(
 ) -> list[TaskRecord]:
     store = TaskStore(GitRepository(repository).root)
     reopened: list[TaskRecord] = []
-    for task_id in task_ids:
-        task = store.load(task_id)
+    selected = [store.load(task_id) for task_id in task_ids]
+    for task in selected:
         task.external_review_state = ExternalReviewState.PENDING
         task.resolved_at = None
         task.resolved_commit = None
@@ -485,4 +496,13 @@ def reopen_frontier(
         task.updated_at = datetime.now(UTC)
         store.save(task)
         reopened.append(task)
+    # Reopening a task also reopens every batch that previously claimed completion.
+    frontier_store = FrontierStore(store.repository)
+    for batch_id in {batch_id for task in reopened for batch_id in task.frontier_batch_ids}:
+        batch = frontier_store.load(batch_id)
+        batch.status = FrontierBatchStatus.OPEN
+        batch.resolved_at = None
+        batch.resolved_commit = None
+        batch.updated_at = datetime.now(UTC)
+        frontier_store.save(batch)
     return reopened

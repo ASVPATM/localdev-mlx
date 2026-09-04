@@ -67,6 +67,8 @@ class ReleaseWorkflow:
                 tests=test_text,
                 context=context,
             )
+        if not tests.passed or open_external:
+            audit.locally_release_ready = False
 
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         bundle = project_state_dir(git.root) / "release-reviews" / stamp

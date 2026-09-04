@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,8 +31,18 @@ class ModelProfile:
     thinking_budget: int = 4096
     max_tokens: int = 8192
     startup_timeout_seconds: int = 900
-    request_timeout_seconds: int = 900
+    request_timeout_seconds: int = 180
     server_args: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            self.request_timeout_seconds <= 0
+            or self.startup_timeout_seconds <= 0
+            or self.max_tokens < 1
+            or self.thinking_budget < 0
+            or not 1 <= self.port <= 65535
+        ):
+            raise ConfigurationError("Model budgets/timeouts/port must be positive and valid")
 
     @property
     def base_url(self) -> str:
@@ -96,10 +107,47 @@ class TestConfig:
         "make",
     )
     env: dict[str, str] = field(default_factory=dict)
+    fail_fast: bool = False
+
+    def __post_init__(self) -> None:
+        if self.timeout_seconds <= 0:
+            raise ConfigurationError("Test timeout must be positive")
+
+
+@dataclass(frozen=True)
+class PrepareConfig:
+    commands: tuple[str, ...] = ()
+    timeout_seconds: int = 600
+
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+    max_attempts: int = 2
+    fallback: bool = True
+    fallback_profile: str | None = None
+    request_timeout_seconds: int = 180
+    planner_timeout_seconds: int = 120
+    planner_repair_timeout_seconds: int = 45
+    reviewer_timeout_seconds: int = 120
+    task_timeout_seconds: int = 900
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.max_attempts <= 4:
+            raise ConfigurationError("max_attempts must be between 1 and 4")
+        for name in (
+            "request_timeout_seconds",
+            "planner_timeout_seconds",
+            "planner_repair_timeout_seconds",
+            "reviewer_timeout_seconds",
+            "task_timeout_seconds",
+        ):
+            if getattr(self, name) <= 0:
+                raise ConfigurationError(f"{name} must be positive")
 
 
 @dataclass(frozen=True)
 class ProjectConfig:
+    schema_version: int = field(default=2, init=False)
     repository: Path
     integration_branch: str = "ai/integration"
     base_branch: str = "main"
@@ -112,12 +160,6 @@ class ProjectConfig:
     stable_docs: tuple[str, ...] = (
         "AGENTS.md",
         "README.md",
-        "docs/ai/PROJECT_BRIEF.md",
-        "docs/ai/ARCHITECTURE.md",
-        "docs/ai/CONTRACTS.md",
-        "docs/ai/CURRENT_STATE.md",
-        "docs/ai/DECISIONS.md",
-        "docs/ai/TASK_QUEUE.md",
     )
     deny_paths: tuple[str, ...] = (
         ".git",
@@ -137,11 +179,37 @@ class ProjectConfig:
         "__pycache__",
     )
     tests: TestConfig = field(default_factory=TestConfig)
+    prepare: PrepareConfig = field(default_factory=PrepareConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+
+    def __post_init__(self) -> None:
+        if self.integration_branch == self.base_branch:
+            raise ConfigurationError("Integration and base branches must differ")
+        if not 0 <= self.max_repair_rounds <= 2:
+            raise ConfigurationError("max_repair_rounds must be between 0 and 2")
+        if (
+            min(
+                self.planner_context_chars,
+                self.worker_context_chars,
+                self.reviewer_context_chars,
+                self.max_file_chars,
+                self.prepare.timeout_seconds,
+            )
+            <= 0
+        ):
+            raise ConfigurationError("Context budgets and preparation timeout must be positive")
 
 
 GLOBAL_CONFIG_PATH = Path(user_config_dir(APP_NAME)) / "config.toml"
 STATE_ROOT = Path(user_state_dir(APP_NAME))
 DATA_ROOT = Path(user_data_dir(APP_NAME))
+# Isolated demos, CI, and real-model validation can keep all runtime artifacts
+# together without touching the user's historical project data.
+if os.environ.get("LOCALDEV_MLX_HOME"):
+    runtime_root = Path(os.environ["LOCALDEV_MLX_HOME"]).expanduser().resolve()
+    GLOBAL_CONFIG_PATH = runtime_root / "config.toml"
+    STATE_ROOT = runtime_root
+    DATA_ROOT = runtime_root
 
 
 def _expand_path(value: str) -> Path:
@@ -180,7 +248,7 @@ def _model_profile(
         thinking_budget=int(raw.get("thinking_budget", 4096)),
         max_tokens=int(raw.get("max_tokens", 8192)),
         startup_timeout_seconds=int(raw.get("startup_timeout_seconds", 900)),
-        request_timeout_seconds=int(raw.get("request_timeout_seconds", 900)),
+        request_timeout_seconds=int(raw.get("request_timeout_seconds", 180)),
         server_args=tuple(args),
     )
 
@@ -192,6 +260,8 @@ def load_global_config(path: Path = GLOBAL_CONFIG_PATH) -> GlobalConfig:
         )
     with path.open("rb") as handle:
         data = tomllib.load(handle)
+    if data.get("schema_version", 1) > 2:
+        raise ConfigurationError("Global config uses a newer unsupported schema")
 
     mlx = _require_table(data, "mlx")
     default_executable_raw = mlx.get("server_executable") or shutil.which("mlx_vlm.server")
@@ -263,10 +333,16 @@ def load_project_config(repository: Path) -> ProjectConfig:
         )
     with path.open("rb") as handle:
         data = tomllib.load(handle)
+    if data.get("schema_version", 1) > 2:
+        raise ConfigurationError("Project config uses a newer unsupported schema")
     context = data.get("context", {})
     tests_raw = data.get("tests", {})
     paths = data.get("paths", {})
-    if not all(isinstance(value, dict) for value in (context, tests_raw, paths)):
+    prepare = data.get("prepare", {})
+    execution = data.get("execution", {})
+    if not all(
+        isinstance(value, dict) for value in (context, tests_raw, paths, prepare, execution)
+    ):
         raise ConfigurationError("[context], [tests], and [paths] must be TOML tables")
     test_env = tests_raw.get("env", {})
     if not isinstance(test_env, dict) or not all(
@@ -281,13 +357,9 @@ def load_project_config(repository: Path) -> ProjectConfig:
         base_branch=str(data.get("base_branch", default.base_branch)),
         auto_integrate=bool(data.get("auto_integrate", default.auto_integrate)),
         max_repair_rounds=int(data.get("max_repair_rounds", default.max_repair_rounds)),
-        planner_context_chars=int(
-            context.get("planner_chars", default.planner_context_chars)
-        ),
+        planner_context_chars=int(context.get("planner_chars", default.planner_context_chars)),
         worker_context_chars=int(context.get("worker_chars", default.worker_context_chars)),
-        reviewer_context_chars=int(
-            context.get("reviewer_chars", default.reviewer_context_chars)
-        ),
+        reviewer_context_chars=int(context.get("reviewer_chars", default.reviewer_context_chars)),
         max_file_chars=int(context.get("max_file_chars", default.max_file_chars)),
         stable_docs=_tuple_strings(paths.get("stable_docs"), default.stable_docs),
         deny_paths=_tuple_strings(paths.get("deny"), default.deny_paths),
@@ -300,12 +372,39 @@ def load_project_config(repository: Path) -> ProjectConfig:
                 default.tests.allowed_executables,
             ),
             env={str(key): str(value) for key, value in test_env.items()},
+            fail_fast=bool(tests_raw.get("fail_fast", False)),
+        ),
+        prepare=PrepareConfig(
+            commands=_tuple_strings(prepare.get("commands"), ()),
+            timeout_seconds=int(prepare.get("timeout_seconds", 600)),
+        ),
+        execution=ExecutionConfig(
+            **{
+                key: value
+                for key, value in execution.items()
+                if key in ExecutionConfig.__dataclass_fields__
+            }
         ),
     )
 
 
+def canonical_repository(repository: Path) -> Path:
+    root = repository.resolve()
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        common = (root / result.stdout.strip()).resolve()
+        if common.name == ".git":
+            return common.parent
+    return root
+
+
 def project_id(repository: Path) -> str:
-    normalized = str(repository.resolve()).encode("utf-8")
+    normalized = str(canonical_repository(repository)).encode("utf-8")
     return hashlib.sha256(normalized).hexdigest()[:16]
 
 
@@ -332,7 +431,7 @@ def write_global_config(
     thinking_budget: int = 4096,
     max_tokens: int = 8192,
     startup_timeout_seconds: int = 900,
-    request_timeout_seconds: int = 900,
+    request_timeout_seconds: int = 180,
     server_args: tuple[str, ...] = (),
     path: Path = GLOBAL_CONFIG_PATH,
     force: bool = False,
@@ -343,7 +442,9 @@ def write_global_config(
     """
 
     if path.exists() and not force:
-        raise ConfigurationError(f"Configuration already exists: {path}. Use --force to replace it.")
+        raise ConfigurationError(
+            f"Configuration already exists: {path}. Use --force to replace it."
+        )
     executable = str(server_executable or shutil.which("mlx_vlm.server") or "mlx_vlm.server")
     role_models = {
         "planner": planner_model,
@@ -358,6 +459,8 @@ def write_global_config(
         role_profiles[role] = profile_for_model[model]
 
     lines = [
+        "schema_version = 2",
+        "",
         "[mlx]",
         f"server_executable = {_quote(executable)}",
         f"host = {_quote(host)}",
@@ -411,10 +514,24 @@ def write_default_project_config(
         f"{_quote(key)} = {_quote(value)}" for key, value in sorted(test_env.items())
     )
 
-    content = f'''integration_branch = {_quote(integration_branch)}
+    content = f"""schema_version = 2
+integration_branch = {_quote(integration_branch)}
 base_branch = {_quote(base_branch)}
 auto_integrate = true
 max_repair_rounds = 2
+
+[execution]
+max_attempts = 2
+fallback = true
+request_timeout_seconds = 180
+planner_timeout_seconds = 120
+planner_repair_timeout_seconds = 45
+reviewer_timeout_seconds = 120
+task_timeout_seconds = 900
+
+[prepare]
+commands = []
+timeout_seconds = 600
 
 [context]
 planner_chars = 150000
@@ -426,12 +543,6 @@ max_file_chars = 100000
 stable_docs = [
   "AGENTS.md",
   "README.md",
-  "docs/ai/PROJECT_BRIEF.md",
-  "docs/ai/ARCHITECTURE.md",
-  "docs/ai/CONTRACTS.md",
-  "docs/ai/CURRENT_STATE.md",
-  "docs/ai/DECISIONS.md",
-  "docs/ai/TASK_QUEUE.md",
 ]
 deny = [
   ".git", ".venv", "venv", "node_modules", ".env", ".env.*",
@@ -450,6 +561,6 @@ allowed_executables = [
 
 [tests.env]
 {test_env_lines}
-'''
+"""
     path.write_text(content, encoding="utf-8")
     return path

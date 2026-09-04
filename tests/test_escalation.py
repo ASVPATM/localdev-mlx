@@ -56,7 +56,7 @@ def test_external_triage_builds_bundle(sample_repo: Path, global_config) -> None
     )
     task = runner.run(
         repository=sample_repo,
-        kind=TaskKind.FEATURE,
+        kind=TaskKind.BUG,
         description="Replace all stored data using a destructive migration",
     )
     assert task.status == TaskStatus.ESCALATED

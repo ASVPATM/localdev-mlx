@@ -16,10 +16,21 @@ def test_replace_text_requires_both_values() -> None:
         FileEdit(operation="replace_text", path="x.py", old_text="x", reason="missing new")
 
 
-def test_non_escalating_implementation_can_report_no_edits() -> None:
-    result = ImplementationResult(summary="Inspection found no edit to apply")
-    assert result.edits == []
-    assert result.needs_escalation is False
+def test_wire_schema_requires_operation_specific_fields() -> None:
+    variants = FileEdit.model_json_schema()["anyOf"]
+    whole_file = next(v for v in variants if v["properties"]["operation"]["const"] == "replace_file")
+    assert "content" in whole_file["required"]
+    assert "old_text" not in whole_file["properties"]
+    text_edit = next(v for v in variants if v["properties"]["operation"]["const"] == "replace_text")
+    assert {"old_text", "new_text"} <= set(text_edit["required"])
+
+
+def test_bare_summary_is_not_an_implementation() -> None:
+    with pytest.raises(ValidationError):
+        ImplementationResult(summary="Inspection found no edit to apply")
+    result = ImplementationResult(result_type="no_change", summary="Already correct",
+                                  notes=["The targeted acceptance test covers the existing behavior."])
+    assert not result.edits
 
 
 def test_no_change_flag_cannot_be_combined_with_edits() -> None:

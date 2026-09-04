@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "localdev-mlx"
-version = "0.2.1"
+dynamic = ["version"]
 description = "A lightweight Git workflow for planning, coding, testing, and reviewing with local MLX models."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,6 +39,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "localdev_mlx.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

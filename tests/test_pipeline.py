@@ -75,6 +75,7 @@ class MultiUnitBugProvider(StructuredProvider):
             if '"title": "Reproduce failures and confirm contracts"' in user_prompt:
                 value = ImplementationResult(
                     summary="Confirmed the subtraction implementation uses addition.",
+                    result_type="analysis", notes=["subtract returns a + b in the current source."],
                     tests_added_or_changed=["tests/test_core.py"],
                 )
             elif '"title": "Record the diagnosed bug"' in user_prompt:
@@ -149,10 +150,11 @@ def test_mock_bug_pipeline_integrates(
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    assert (sample_repo / "docs/ai/handoffs" / f"{task.id}.md").exists()
+    assert task.attempt_records and task.phase_history
+    assert not (sample_repo / "docs/ai/handoffs" / f"{task.id}.md").exists()
     assert task.timings_seconds["Total workflow"] > 0
     assert any("CREATED" in message for message in messages)
-    assert any("TRIAGING" in message for message in messages)
+    assert any("PLANNING" in message for message in messages)
     assert any("COMPLETE" in message for message in messages)
 
 
@@ -180,7 +182,7 @@ def test_bug_pipeline_accepts_no_edit_unit_and_cumulative_repairs(
     assert "return a - b" in core
     assert any("ANALYZED" in message for message in messages)
     assert any("DEFERRED" in message for message in messages)
-    assert any("Final quick validation" in message for message in messages)
+    assert any("tests-after-work-units" in message for message in messages)
 
 
 def test_maintenance_depth_scales_all_role_budgets(global_config) -> None:
@@ -207,9 +209,9 @@ def test_maintenance_depth_scales_all_role_budgets(global_config) -> None:
     assert balanced._planner_profile().thinking_budget < deep._planner_profile().thinking_budget
     assert fast._worker_profile().max_tokens < deep._worker_profile().max_tokens
     assert fast._reviewer_profile().thinking_budget < deep._reviewer_profile().thinking_budget
-    assert deep._planner_profile() == global_config.planner
-    assert deep._worker_profile() == global_config.worker
-    assert deep._reviewer_profile() == global_config.reviewer
+    assert deep._planner_profile().thinking_budget == global_config.planner.thinking_budget
+    assert deep._worker_profile().request_timeout_seconds <= 180
+    assert deep._reviewer_profile().request_timeout_seconds <= 120
 
 
 class BaselineAwareProvider(StructuredProvider):
@@ -350,7 +352,7 @@ def test_bug_triage_receives_actual_baseline_failures(
     )
 
     assert task.status == TaskStatus.INTEGRATED, task.model_dump_json(indent=2)
-    assert any("before bug triage" in event for event in task.events)
+    assert any("before inference" in event for event in task.events)
 
 
 def test_worker_no_edit_promotes_to_alternate_local_model(
@@ -592,8 +594,8 @@ def test_analysis_only_bug_plan_is_rejected_before_worker(
         description="Repair subtraction, not just inspect it.",
     )
 
-    assert task.status == TaskStatus.ESCALATED
+    assert task.status == TaskStatus.FAILED
     assert provider.triage_calls == 2
     assert provider.worker_called is False
-    assert task.external_review_category is not None
-    assert task.external_review_category.value == "planner_invalid"
+    assert task.failure_category.value == "planner_invalid"
+    assert task.external_review_state.value == "none"

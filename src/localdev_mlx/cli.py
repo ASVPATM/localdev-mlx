@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
@@ -27,6 +28,7 @@ from localdev_mlx.config import (
     load_project_config,
     write_global_config,
 )
+from localdev_mlx.diagnostics import installation_identity
 from localdev_mlx.escalation import export_bundle
 from localdev_mlx.git import GitRepository
 from localdev_mlx.models import ModelManager
@@ -127,11 +129,11 @@ def _mock_global() -> GlobalConfig:
     )
 
 
-def _cleanup_models(config: GlobalConfig, *, keep_model_loaded: bool) -> None:
+def _cleanup_models(config: GlobalConfig, *, keep_model_loaded: bool, manager=None) -> None:
     if not config.stop_after_run or keep_model_loaded:
         return
     try:
-        ModelManager().stop()
+        (manager or ModelManager()).stop()
     except Exception as exc:  # Cleanup must not hide a successful workflow result.
         console.print(
             "Warning: the model request succeeded, but automatic MLX shutdown failed. "
@@ -143,6 +145,12 @@ def _cleanup_models(config: GlobalConfig, *, keep_model_loaded: bool) -> None:
 
 
 def _next_action(task: TaskRecord) -> str:
+    if task.status == TaskStatus.FAILED:
+        return f"Fix the recorded {task.failure_category or 'workflow'} error; inspect localdev-mlx show-task {task.id}."
+    if task.status == TaskStatus.CANCELLED:
+        return "Cancelled; inspect preserved artifacts and start a new task when ready."
+    if task.status == TaskStatus.PLANNED:
+        return "Inspect triage.json and context manifests before running without --plan-only."
     if task.status == TaskStatus.INTEGRATED:
         return "Saved on ai/integration; include it in a later release-candidate audit."
     if task.status == TaskStatus.APPROVED:
@@ -164,6 +172,7 @@ def _print_task_result(task: TaskRecord) -> None:
             f"Commit: {task.final_commit or '-'}\n"
             f"Frontier state: {external_state}\n"
             f"Frontier category: {category}\n"
+            f"Failure category: {task.failure_category or '-'}\n"
             f"Canonical review bundle: {task.escalation_path or '-'}\n"
             f"Project-visible review copy: {task.visible_review_path or '-'}\n"
             f"Next: {_next_action(task)}",
@@ -186,13 +195,17 @@ def _run_maintenance(
     allow_paths: list[str] | None = None,
     read_paths: list[str] | None = None,
     mock: bool = False,
+    max_attempts: int | None = None,
+    no_fallback: bool = False,
+    request_timeout: int | None = None,
+    task_timeout: int | None = None,
+    plan_only: bool = False,
+    test_commands: list[str] | None = None,
 ) -> None:
     config: GlobalConfig | None = None
     try:
         if frontier_only and (direct or allow_paths or read_paths):
-            raise ValueError(
-                "--frontier-only cannot be combined with --direct, --allow, or --read"
-            )
+            raise ValueError("--frontier-only cannot be combined with --direct, --allow, or --read")
         if direct and not allow_paths:
             raise ValueError("--direct requires at least one --allow PATH")
         if not direct and (allow_paths or read_paths):
@@ -213,6 +226,11 @@ def _run_maintenance(
             manage_models=not mock,
             progress=_progress(progress_interval),
             depth=depth,  # type: ignore[arg-type]
+            max_attempts=max_attempts,
+            no_fallback=no_fallback,
+            request_timeout=request_timeout,
+            task_timeout=task_timeout,
+            keep_model_loaded=keep_model_loaded,
         )
         task = runner.run(
             repository=repo,
@@ -221,8 +239,14 @@ def _run_maintenance(
             auto_integrate=not no_integrate,
             direct_allowed_paths=list(allow_paths or []) if direct else None,
             direct_read_paths=list(read_paths or []) if direct else None,
+            direct_test_commands=test_commands,
+            plan_only=plan_only,
         )
         _print_task_result(task)
+        if task.status in {TaskStatus.FAILED, TaskStatus.ESCALATED, TaskStatus.CANCELLED}:
+            raise typer.Exit(130 if task.status == TaskStatus.CANCELLED else 1)
+    except typer.Exit:
+        raise
     except Exception as exc:
         _handle_error(exc)
     finally:
@@ -309,7 +333,9 @@ def configure(
     ] = False,
     thinking: Annotated[
         bool,
-        typer.Option("--thinking/--no-thinking", help="Enable thinking mode for configured models."),
+        typer.Option(
+            "--thinking/--no-thinking", help="Enable thinking mode for configured models."
+        ),
     ] = True,
     thinking_budget: Annotated[
         int,
@@ -352,13 +378,23 @@ def configure(
 
 @app.command()
 def doctor(
-    repo: Annotated[Path | None, typer.Option("--repo", help="Optional initialized project.")] = None,
+    repo: Annotated[
+        Path | None, typer.Option("--repo", help="Optional initialized project.")
+    ] = None,
+    prepare: Annotated[
+        bool,
+        typer.Option(help="Run preparation and both test gates in a fresh worktree (no models)."),
+    ] = False,
 ) -> None:
     """Check the CLI, MLX configuration, Git, and an optional project."""
     table = Table(title="LocalDev MLX doctor")
     table.add_column("Check")
     table.add_column("Result")
     table.add_column("Details")
+    identity = installation_identity()
+    table.add_row(
+        "Install identity", "PASS" if identity["versions_agree"] else "FAIL", json.dumps(identity)
+    )
     table.add_row(
         "Python >= 3.11",
         "PASS" if sys.version_info >= (3, 11) else "FAIL",
@@ -411,6 +447,49 @@ def doctor(
                 "PASS" if project.tests.quick and project.tests.full else "FAIL",
                 f"quick={list(project.tests.quick)} full={list(project.tests.full)}",
             )
+            if prepare:
+                from localdev_mlx.execution.tests import prepare_project, run_tests
+
+                store = TaskStore(root)
+                task = store.create(
+                    TaskKind.AUDIT, "Doctor fresh-worktree validation", "controller"
+                )
+                workspace = git.create_task_workspace(project, task.id)
+                task.task_branch, task.task_worktree = workspace.branch, str(workspace.path)
+                task.base_commit, task.integration_branch = (
+                    workspace.base_commit,
+                    workspace.integration_branch,
+                )
+                store.save(task)
+                results = []
+                try:
+                    prepared = prepare_project(workspace.path, project.tests, project.prepare)
+                    if prepared:
+                        results.append(prepared)
+                    if prepared is None or prepared.passed:
+                        results.extend(
+                            run_tests(workspace.path, project.tests, gate)
+                            for gate in ("quick", "full")
+                        )
+                    for result in results:
+                        store.write_json(task.id, f"doctor-{result.profile}.json", result)
+                        table.add_row(
+                            f"Fresh {result.profile}",
+                            "PASS" if result.passed else "FAIL",
+                            str(store.path(task.id)),
+                        )
+                    task.transition(
+                        TaskStatus.PLANNED if all(r.passed for r in results) else TaskStatus.FAILED,
+                        "Doctor validation complete; no implementation attempted",
+                    )
+                    if git.is_clean(workspace.path):
+                        git.cleanup_task_workspace(workspace)
+                        task.task_worktree = None
+                except Exception as exc:
+                    task.transition(TaskStatus.FAILED, str(exc))
+                    raise
+                finally:
+                    store.save(task)
         except Exception as exc:
             table.add_row("Project", "FAIL", str(exc))
 
@@ -418,6 +497,12 @@ def doctor(
     console.print(f"Config: {user_config_dir(APP_NAME)}")
     console.print(f"State:  {user_state_dir(APP_NAME)}")
     console.print(f"Data:   {user_data_dir(APP_NAME)}")
+
+
+@app.command()
+def diagnostics() -> None:
+    """Report executable, interpreter, module, distribution, and source identity."""
+    console.print_json(data=installation_identity())
 
 
 @app.command("init")
@@ -480,8 +565,7 @@ def model_status() -> None:
         config = _global()
         manager = ModelManager()
         data = {
-            role: manager.status(config.profile(role))
-            for role in ("planner", "worker", "reviewer")
+            role: manager.status(config.profile(role)) for role in ("planner", "worker", "reviewer")
         }
         console.print_json(data=data)
     except Exception as exc:
@@ -524,16 +608,36 @@ def model_probe(
     profile: Annotated[str, typer.Argument(help="Role or configured profile name.")],
     keep_model_loaded: Annotated[bool, typer.Option("--keep-model-loaded")] = False,
     progress_interval: Annotated[float, typer.Option("--progress-interval", min=5)] = 20,
+    capabilities: Annotated[
+        bool, typer.Option(help="Probe real triage, edit, and review schemas.")
+    ] = False,
+    request_timeout: Annotated[int, typer.Option(min=1)] = 120,
 ) -> None:
     """Verify model loading and JSON-schema output."""
     config: GlobalConfig | None = None
+    runtime = ExitStack()
+    manager = ModelManager()
     try:
         config = _global()
         selected = config.profile(profile)
+        runtime.enter_context(manager.lease())
         progress = _progress(progress_interval)
         with progress.operation(f"PROBE-{profile}", f"Preparing {selected.model}"):
-            ModelManager().ensure(selected)
+            manager.ensure(selected)
         provider = MLXOpenAIProvider()
+        if capabilities:
+            from localdev_mlx.models.capabilities import probe_capabilities
+
+            with progress.operation(
+                f"PROBE-{profile}", f"Three capability probes; deadline {request_timeout}s each"
+            ):
+                results = probe_capabilities(selected, provider, timeout=request_timeout)
+            target = ModelManager().root / f"capabilities-{selected.name}.json"
+            target.write_text(json.dumps(results, indent=2), encoding="utf-8")
+            console.print_json(data=results)
+            if not all(result["passed"] for result in results):
+                raise typer.Exit(1)
+            return
         result = provider.complete_structured(
             profile=selected,
             system_prompt="Return only schema-valid JSON.",
@@ -548,7 +652,8 @@ def model_probe(
         _handle_error(exc)
     finally:
         if config is not None:
-            _cleanup_models(config, keep_model_loaded=keep_model_loaded)
+            _cleanup_models(config, keep_model_loaded=keep_model_loaded, manager=manager)
+        runtime.close()
 
 
 @app.command()
@@ -622,7 +727,9 @@ def bug(
     description: Annotated[str, typer.Argument(help="Observed and expected behavior.")],
     repo: Annotated[Path, typer.Option("--repo")] = Path("."),
     depth: Annotated[str, typer.Option(help="fast, balanced, or deep")] = "balanced",
-    no_integrate: Annotated[bool, typer.Option(help="Leave the approved commit on its task branch.")] = False,
+    no_integrate: Annotated[
+        bool, typer.Option(help="Leave the approved commit on its task branch.")
+    ] = False,
     frontier_only: Annotated[
         bool,
         typer.Option(
@@ -654,10 +761,25 @@ def bug(
     ] = None,
     keep_model_loaded: Annotated[bool, typer.Option("--keep-model-loaded")] = False,
     progress_interval: Annotated[float, typer.Option("--progress-interval", min=5)] = 30,
+    max_attempts: Annotated[int | None, typer.Option(min=1, max=4)] = None,
+    no_fallback: Annotated[bool, typer.Option()] = False,
+    request_timeout: Annotated[int | None, typer.Option(min=1)] = None,
+    task_timeout: Annotated[int | None, typer.Option(min=1)] = None,
+    plan_only: Annotated[bool, typer.Option("--plan-only", "--dry-run")] = False,
+    test_commands: Annotated[
+        list[str] | None,
+        typer.Option("--test", help="Targeted acceptance command; full gate still required."),
+    ] = None,
 ) -> None:
     """Triage, implement, test, and review a bug fix."""
     _run_maintenance(
         kind=TaskKind.BUG,
+        max_attempts=max_attempts,
+        no_fallback=no_fallback,
+        request_timeout=request_timeout,
+        task_timeout=task_timeout,
+        plan_only=plan_only,
+        test_commands=test_commands,
         description=description,
         repo=repo,
         depth=depth,
@@ -676,7 +798,9 @@ def feature(
     description: Annotated[str, typer.Argument(help="Feature behavior and acceptance criteria.")],
     repo: Annotated[Path, typer.Option("--repo")] = Path("."),
     depth: Annotated[str, typer.Option(help="fast, balanced, or deep")] = "balanced",
-    no_integrate: Annotated[bool, typer.Option(help="Leave the approved commit on its task branch.")] = False,
+    no_integrate: Annotated[
+        bool, typer.Option(help="Leave the approved commit on its task branch.")
+    ] = False,
     frontier_only: Annotated[
         bool,
         typer.Option(
@@ -708,10 +832,22 @@ def feature(
     ] = None,
     keep_model_loaded: Annotated[bool, typer.Option("--keep-model-loaded")] = False,
     progress_interval: Annotated[float, typer.Option("--progress-interval", min=5)] = 30,
+    max_attempts: Annotated[int | None, typer.Option(min=1, max=4)] = None,
+    no_fallback: Annotated[bool, typer.Option()] = False,
+    request_timeout: Annotated[int | None, typer.Option(min=1)] = None,
+    task_timeout: Annotated[int | None, typer.Option(min=1)] = None,
+    plan_only: Annotated[bool, typer.Option("--plan-only", "--dry-run")] = False,
+    test_commands: Annotated[list[str] | None, typer.Option("--test")] = None,
 ) -> None:
     """Implement a bounded feature through the local review loop."""
     _run_maintenance(
         kind=TaskKind.FEATURE,
+        max_attempts=max_attempts,
+        no_fallback=no_fallback,
+        request_timeout=request_timeout,
+        task_timeout=task_timeout,
+        plan_only=plan_only,
+        test_commands=test_commands,
         description=description,
         repo=repo,
         depth=depth,
@@ -730,7 +866,9 @@ def tweak(
     description: Annotated[str, typer.Argument(help="Small requested adjustment.")],
     repo: Annotated[Path, typer.Option("--repo")] = Path("."),
     depth: Annotated[str, typer.Option(help="fast, balanced, or deep")] = "fast",
-    no_integrate: Annotated[bool, typer.Option(help="Leave the approved commit on its task branch.")] = False,
+    no_integrate: Annotated[
+        bool, typer.Option(help="Leave the approved commit on its task branch.")
+    ] = False,
     frontier_only: Annotated[
         bool,
         typer.Option(
@@ -762,10 +900,22 @@ def tweak(
     ] = None,
     keep_model_loaded: Annotated[bool, typer.Option("--keep-model-loaded")] = False,
     progress_interval: Annotated[float, typer.Option("--progress-interval", min=5)] = 30,
+    max_attempts: Annotated[int | None, typer.Option(min=1, max=4)] = None,
+    no_fallback: Annotated[bool, typer.Option()] = False,
+    request_timeout: Annotated[int | None, typer.Option(min=1)] = None,
+    task_timeout: Annotated[int | None, typer.Option(min=1)] = None,
+    plan_only: Annotated[bool, typer.Option("--plan-only", "--dry-run")] = False,
+    test_commands: Annotated[list[str] | None, typer.Option("--test")] = None,
 ) -> None:
     """Apply a narrow project tweak through the same safety gates."""
     _run_maintenance(
         kind=TaskKind.TWEAK,
+        max_attempts=max_attempts,
+        no_fallback=no_fallback,
+        request_timeout=request_timeout,
+        task_timeout=task_timeout,
+        plan_only=plan_only,
+        test_commands=test_commands,
         description=description,
         repo=repo,
         depth=depth,
@@ -795,15 +945,16 @@ def status(repo: Annotated[Path, typer.Option("--repo")] = Path(".")) -> None:
                 task.kind.value,
                 task.status.value,
                 task.external_review_state.value,
-                task.external_review_category.value if task.external_review_category else "",
+                (task.failure_category or task.external_review_category).value
+                if (task.failure_category or task.external_review_category)
+                else "",
                 task.updated_at.isoformat(timespec="seconds"),
             )
         console.print(table)
         open_count = len(store.open_external())
         integrated_count = sum(task.status == TaskStatus.INTEGRATED for task in tasks)
         console.print(
-            f"Integrated local tasks: {integrated_count} | "
-            f"Open frontier items: {open_count}"
+            f"Integrated local tasks: {integrated_count} | Open frontier items: {open_count}"
         )
         if open_count:
             console.print(
@@ -838,6 +989,8 @@ def follow(
             TaskStatus.DEFERRED,
             TaskStatus.ESCALATED,
             TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+            TaskStatus.PLANNED,
         }
         while True:
             task = store.load(selected)
@@ -855,6 +1008,7 @@ def follow(
 
 
 @app.command("show-task")
+@app.command("explain-task")
 def show_task(
     task_id: Annotated[str, typer.Argument()],
     repo: Annotated[Path, typer.Option("--repo")] = Path("."),
@@ -863,6 +1017,64 @@ def show_task(
     try:
         task = TaskStore(_repository(repo)).load(task_id)
         console.print_json(task.model_dump_json(indent=2))
+    except Exception as exc:
+        _handle_error(exc)
+
+
+@app.command()
+def cancel(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[Path, typer.Option("--repo")] = Path("."),
+) -> None:
+    """Request cooperative cancellation; artifacts survive and no unrelated PID is signalled."""
+    try:
+        store = TaskStore(_repository(repo))
+        task = store.load(task_id)
+        if task.local_outcome is not None:
+            console.print(f"Task already stopped: {task.status.value}")
+            return
+        store.write_text(task_id, "cancel.request", "Cancelled by user\n")
+        console.print(f"Cancellation requested for {task_id}; inspect with show-task.")
+    except Exception as exc:
+        _handle_error(exc)
+
+
+@app.command()
+def cleanup(
+    task_id: Annotated[str, typer.Argument()],
+    repo: Annotated[Path, typer.Option("--repo")] = Path("."),
+    force: Annotated[
+        bool, typer.Option(help="Remove uncommitted work in this exact task worktree.")
+    ] = False,
+) -> None:
+    """Remove a stopped task's registered worktree; preserve task artifacts and unmerged commits."""
+    from localdev_mlx.git import TaskWorkspace
+
+    try:
+        git = GitRepository(repo)
+        store = TaskStore(git.root)
+        task = store.load(task_id)
+        if task.local_outcome is None:
+            raise ValueError("Task is not terminal; cancel it first")
+        if not task.task_worktree or not Path(task.task_worktree).exists():
+            console.print("No remaining task worktree.")
+            return
+        config = load_project_config(git.root)
+        workspace = TaskWorkspace(
+            task.id,
+            task.task_branch,
+            Path(task.task_worktree),
+            git.ensure_integration_worktree(config),
+            config.integration_branch,
+            task.base_commit,
+        )
+        store.write_text(task.id, "cleanup-preserved.patch", git.diff(workspace.path))
+        git.cleanup_task_workspace(workspace, force=force)
+        task.task_worktree = None
+        store.save(task)
+        console.print(
+            f"Removed task worktree. Artifacts and cleanup-preserved.patch: {store.path(task.id)}"
+        )
     except Exception as exc:
         _handle_error(exc)
 
@@ -972,8 +1184,7 @@ def frontier_status(
             else store.open_external()
         )
         table = Table(
-            title=("All frontier items" if all_items else "Open frontier items")
-            + f" — {root.name}"
+            title=("All frontier items" if all_items else "Open frontier items") + f" — {root.name}"
         )
         for column in ("ID", "Kind", "Outcome", "State", "Category", "Batches"):
             table.add_column(column)
@@ -1263,7 +1474,9 @@ def sample_create(
         if target.exists():
             if not force:
                 raise RuntimeError(f"Sample path already exists: {target}")
-            shutil.rmtree(target)
+            raise RuntimeError(
+                f"Preserving existing directory {target}; choose a new disposable sample path"
+            )
         (target / "src/samplecalc").mkdir(parents=True)
         (target / "tests").mkdir(parents=True)
         (target / "src/samplecalc/__init__.py").write_text(
@@ -1281,10 +1494,18 @@ def sample_create(
         (target / "README.md").write_text("# LocalDev Sample\n", encoding="utf-8")
         (target / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")
         subprocess.run(["git", "init", "-b", "main", str(target)], check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(target), "config", "user.name", "LocalDev Sample"], check=True)
-        subprocess.run(["git", "-C", str(target), "config", "user.email", "sample@local.invalid"], check=True)
+        subprocess.run(
+            ["git", "-C", str(target), "config", "user.name", "LocalDev Sample"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(target), "config", "user.email", "sample@local.invalid"], check=True
+        )
         subprocess.run(["git", "-C", str(target), "add", "."], check=True)
-        subprocess.run(["git", "-C", str(target), "commit", "-m", "test: create broken sample"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(target), "commit", "-m", "test: create broken sample"],
+            check=True,
+            capture_output=True,
+        )
         root, _ = initialize_project(
             target,
             quick_tests=["python3 -m unittest discover -s tests -v"],
@@ -1292,7 +1513,11 @@ def sample_create(
             test_env={"PYTHONPATH": "src"},
         )
         subprocess.run(["git", "-C", str(root), "add", "."], check=True)
-        subprocess.run(["git", "-C", str(root), "commit", "-m", "chore: initialize LocalDev MLX"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(root), "commit", "-m", "chore: initialize LocalDev MLX"],
+            check=True,
+            capture_output=True,
+        )
         console.print(f"Created sample repository: [bold]{target}[/bold]")
     except Exception as exc:
         _handle_error(exc)

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 import signal
 import socket
 import subprocess
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from functools import wraps
 from typing import Any
 
 import httpx
@@ -18,19 +22,81 @@ class ModelManagerError(RuntimeError):
     """Raised when a managed MLX server cannot be started, stopped, or identified."""
 
 
+def serialized(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self.lease():
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class ModelManager:
     def __init__(self) -> None:
         self.root = STATE_ROOT / "model-server"
         self.root.mkdir(parents=True, exist_ok=True)
         self.state_path = self.root / "state.json"
         self.log_path = self.root / "mlx-server.log"
+        self._children: dict[int, subprocess.Popen] = {}
+        self._lease_depth = 0
+
+    @contextmanager
+    def lease(self):
+        """Reserve sequential model residency for this workflow across CLI processes."""
+        handle = None
+        if not self._lease_depth:
+            handle = (self.root / "lease.lock").open("a")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                handle.close()
+                raise ModelManagerError(
+                    "Another LocalDev workflow owns the model runtime; wait for it to finish"
+                ) from exc
+        self._lease_depth += 1
+        try:
+            yield
+        finally:
+            self._lease_depth -= 1
+            if handle:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                handle.close()
+
+    @staticmethod
+    def _fingerprint(pid: int) -> str | None:
+        if pid <= 1:
+            return None
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "lstart=,command="],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode or not result.stdout.strip():
+            return None
+        return hashlib.sha256(result.stdout.strip().encode()).hexdigest()
+
+    def _owned(self, state: dict[str, Any]) -> bool:
+        pid = int(state.get("pid", 0))
+        child = self._children.get(pid)
+        if child is not None:
+            return child.poll() is None
+        expected = state.get("fingerprint")
+        return bool(expected and expected == self._fingerprint(pid))
 
     def _read_state(self) -> dict[str, Any] | None:
         if not self.state_path.exists():
             return None
         try:
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            value = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict) or not isinstance(value.get("pid"), int):
+                return None
+            return value
+        except (json.JSONDecodeError, OSError, ValueError):
             return None
 
     def _write_state(self, state: dict[str, Any]) -> None:
@@ -40,6 +106,8 @@ class ModelManager:
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:
+        if pid <= 1:
+            return False
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -68,11 +136,7 @@ class ModelManager:
         except (httpx.HTTPError, ValueError):
             return []
         values = body.get("data", []) if isinstance(body, dict) else []
-        return [
-            str(item.get("id"))
-            for item in values
-            if isinstance(item, dict) and item.get("id")
-        ]
+        return [str(item.get("id")) for item in values if isinstance(item, dict) and item.get("id")]
 
     def status(self, profile: ModelProfile | None = None) -> dict[str, Any]:
         state = self._read_state()
@@ -88,7 +152,7 @@ class ModelManager:
             alive = pid > 0 and self._pid_alive(pid)
             result.update(
                 {
-                    "managed": alive,
+                    "managed": alive and self._owned(state),
                     "running": alive,
                     "profile": state.get("profile"),
                     "pid": pid,
@@ -114,14 +178,16 @@ class ModelManager:
             result["matches_requested"] = False
         return result
 
+    @serialized
     def ensure(self, profile: ModelProfile) -> None:
         state = self._read_state()
-        if state and self._pid_alive(int(state.get("pid", 0))):
+        if state and self._pid_alive(int(state.get("pid", 0))) and self._owned(state):
             if (
                 state.get("model") == profile.model
                 and str(state.get("host")) == profile.host
                 and int(state.get("port", 0)) == profile.port
                 and self._port_open(profile.host, profile.port)
+                and profile.model in self._served_models(profile)
             ):
                 return
             self.stop()
@@ -130,17 +196,18 @@ class ModelManager:
 
         if self._port_open(profile.host, profile.port):
             served = self._served_models(profile)
-            if profile.model in served:
-                # Respect an externally managed MLX server. The request's model
-                # field selects the configured model when the server supports it.
+            if served == [profile.model]:
+                # A list of cached models cannot establish active residency.
                 return
             raise ModelManagerError(
                 f"A non-managed process is listening on {profile.host}:{profile.port} "
-                f"but does not advertise {profile.model!r}. Stop it or change the LocalDev port."
+                f"without verified single-model residency for {profile.model!r}. "
+                "Use a separate LocalDev port or stop that server yourself."
             )
 
         self.start(profile)
 
+    @serialized
     def start(self, profile: ModelProfile) -> None:
         if not profile.executable.exists():
             raise ModelManagerError(f"mlx_vlm.server executable not found: {profile.executable}")
@@ -182,6 +249,7 @@ class ModelManager:
                 start_new_session=True,
                 text=True,
             )
+        self._children[process.pid] = process
         self._write_state(
             {
                 "pid": process.pid,
@@ -190,6 +258,10 @@ class ModelManager:
                 "host": profile.host,
                 "port": profile.port,
                 "command": command,
+                "executable": str(profile.executable),
+                "fingerprint": self._fingerprint(process.pid),
+                "owner_pid": os.getpid(),
+                "log_path": str(self.log_path),
                 "started_at": datetime.now(UTC).isoformat(),
             }
         )
@@ -240,15 +312,16 @@ class ModelManager:
     ) -> bool:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
-            # A terminated child may briefly remain as a zombie, for which
-            # os.kill(pid, 0) still reports success. Once the listening socket
-            # is closed, the managed server is no longer serving or retaining
-            # the model and cleanup can safely finish.
-            if not self._pid_alive(pid) or not self._port_open(host, port):
+            child = self._children.get(pid)
+            exited = child.poll() is not None if child else not self._pid_alive(pid)
+            if exited and not self._port_open(host, port):
                 return True
             time.sleep(0.25)
-        return not self._pid_alive(pid) or not self._port_open(host, port)
+        child = self._children.get(pid)
+        exited = child.poll() is not None if child else not self._pid_alive(pid)
+        return exited and not self._port_open(host, port)
 
+    @serialized
     def stop(self) -> None:
         state = self._read_state()
         if not state:
@@ -262,34 +335,33 @@ class ModelManager:
             self.state_path.unlink(missing_ok=True)
             return
 
-        # A stale state file must never cause LocalDev to signal an unrelated
-        # process that later reused the recorded PID. If the managed endpoint is
-        # already gone, discard the stale state instead.
-        if not self._port_open(host, port):
+        if not self._owned(state):
             self.state_path.unlink(missing_ok=True)
             return
 
         try:
-            httpx.post(f"http://{host}:{port}/unload", timeout=10)
+            httpx.post(f"http://{host}:{port}/unload", timeout=1, trust_env=False)
         except httpx.HTTPError:
             pass
 
-        self._signal_pid(pid, signal.SIGTERM)
-        if self._wait_until_stopped(
-            pid=pid,
-            host=host,
-            port=port,
-            timeout_seconds=20,
-        ):
-            self.state_path.unlink(missing_ok=True)
-            return
-
-        self._signal_pid(pid, signal.SIGKILL)
+        if self._owned(state):
+            self._signal_pid(pid, signal.SIGTERM)
         if self._wait_until_stopped(
             pid=pid,
             host=host,
             port=port,
             timeout_seconds=5,
+        ):
+            self.state_path.unlink(missing_ok=True)
+            return
+
+        if self._owned(state):
+            self._signal_pid(pid, signal.SIGKILL)
+        if self._wait_until_stopped(
+            pid=pid,
+            host=host,
+            port=port,
+            timeout_seconds=2,
         ):
             self.state_path.unlink(missing_ok=True)
             return

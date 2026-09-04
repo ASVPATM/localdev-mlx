@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from localdev_mlx.git.edits import EditError, safe_target
 from localdev_mlx.git.repository import GitRepository
 
 TEXT_SUFFIXES = {
@@ -72,14 +73,19 @@ def markdown_headings(path: Path) -> str:
     return " | ".join(headings[:12])
 
 
-def build_repository_map(root: Path, *, max_entries: int = 2500) -> str:
+def build_repository_map(
+    root: Path, *, max_entries: int = 2500, deny_patterns: tuple[str, ...] = ()
+) -> str:
     repository = GitRepository(root)
     lines = ["# Repository map", ""]
     for index, relative in enumerate(repository.list_files(root)):
         if index >= max_entries:
             lines.append(f"... truncated after {max_entries} entries")
             break
-        path = root / relative
+        try:
+            path = safe_target(root, relative, deny_patterns)
+        except EditError:
+            continue
         if not path.exists() or path.is_dir():
             continue
         size = path.stat().st_size

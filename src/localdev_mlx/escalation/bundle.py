@@ -13,7 +13,7 @@ from localdev_mlx.tasks import TaskStore
 def _copy_bundle(source: Path, destination: Path) -> Path:
     destination = destination.resolve()
     if destination.exists():
-        shutil.rmtree(destination)
+        raise FileExistsError(f"Refusing to replace an existing export directory: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, destination)
     return destination

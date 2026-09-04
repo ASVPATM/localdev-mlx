@@ -62,7 +62,7 @@ class QueueWorkflow:
 
 ## Acceptance summary
 
-{chr(10).join(f'- {item}' for item in task.acceptance_summary)}
+{chr(10).join(f"- {item}" for item in task.acceptance_summary)}
 
 ## Why this is external
 
@@ -167,14 +167,20 @@ Read `AGENTS.md`, the canonical `docs/ai/` documents, dependency handoffs, and r
                 current.status = PlannedTaskStatus.COMPLETED
                 outcome = f"completed as {task.id}"
             else:
-                current.status = PlannedTaskStatus.ESCALATED
-                outcome = f"escalated as {task.id}: {task.escalation_path}"
+                current.status = (
+                    PlannedTaskStatus.ESCALATED
+                    if task.status == TaskStatus.ESCALATED
+                    else PlannedTaskStatus.BLOCKED
+                )
+                outcome = f"{task.status.value} as {task.id}; category={task.failure_category}"
             self._save(queue_path, queue)
             git.commit_all(integration, f"chore: update planned task {planned.id} status")
             results.append((planned.id, outcome))
             executed += 1
             self.progress.emit(f"[QUEUE] RESULT — {planned.id}: {outcome}")
-            if current.status == PlannedTaskStatus.ESCALATED and not continue_on_escalation:
+            if current.status == PlannedTaskStatus.BLOCKED or (
+                current.status == PlannedTaskStatus.ESCALATED and not continue_on_escalation
+            ):
                 break
 
         self.progress.emit(f"[QUEUE] COMPLETE — processed {executed} local task(s)")

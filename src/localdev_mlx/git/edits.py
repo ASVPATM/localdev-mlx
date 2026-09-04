@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -27,23 +29,46 @@ DEFAULT_SECRET_PATTERNS = (
 def _matches_any(path: str, patterns: tuple[str, ...]) -> bool:
     parts = path.replace("\\", "/").split("/")
     return any(
-        fnmatch.fnmatch(path, pattern)
-        or any(fnmatch.fnmatch(part, pattern) for part in parts)
+        fnmatch.fnmatch(path, pattern) or any(fnmatch.fnmatch(part, pattern) for part in parts)
         for pattern in patterns
     )
 
 
 def safe_target(root: Path, relative: str, deny_patterns: tuple[str, ...]) -> Path:
+    relative = relative.replace("\\", "/")
+    parts = Path(relative).parts
+    if (
+        not parts
+        or relative == "."
+        or Path(relative).is_absolute()
+        or ".." in parts
+        or ":" in relative
+    ):
+        raise EditError(f"Path must be repository-relative: {relative}")
+    if ".git" in parts or ".localdev" in parts:
+        raise EditError(f"Controller/Git policy path is not editable: {relative}")
     if _matches_any(relative, deny_patterns + DEFAULT_SECRET_PATTERNS):
         raise EditError(f"Refusing to edit denied or secret-like path: {relative}")
-    target = (root / relative).resolve()
+    target = root.resolve()
+    for part in parts:
+        target = target / part
+        if target.is_symlink():
+            raise EditError(f"Refusing to edit symlink: {relative}")
     try:
         target.relative_to(root.resolve())
     except ValueError as exc:
         raise EditError(f"Edit escapes worktree: {relative}") from exc
-    if target.exists() and target.is_symlink():
-        raise EditError(f"Refusing to edit symlink: {relative}")
     return target
+
+
+def file_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "missing"
+
+
+def edit_digest(edits: list[FileEdit]) -> str:
+    # Prose and hashes do not make replayed operations materially different.
+    payload = [edit.model_dump(exclude={"reason", "base_hash"}) for edit in edits]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def _atomic_write_bytes(path: Path, content: bytes, mode: int | None = None) -> None:
@@ -62,7 +87,7 @@ def _atomic_write_bytes(path: Path, content: bytes, mode: int | None = None) -> 
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    mode = path.stat().st_mode & 0o7777 if path.exists() else None
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
     _atomic_write_bytes(path, content.encode("utf-8"), mode)
 
 
@@ -94,6 +119,10 @@ def apply_edits(
             if target.exists() and target.is_dir():
                 raise EditError(f"Directory edits are not supported: {edit.path}")
             if target not in backups:
+                if edit.base_hash is not None and edit.base_hash != file_hash(target):
+                    raise EditError(
+                        f"Stale edit precondition for {edit.path}; current sha256={file_hash(target)}"
+                    )
                 if target.exists():
                     backups[target] = (
                         True,
@@ -145,8 +174,7 @@ def apply_edits(
                 rollback_errors.append(f"{target}: {rollback_exc}")
         if rollback_errors:
             raise EditError(
-                f"Edit failed ({exc}) and rollback was incomplete: "
-                + "; ".join(rollback_errors)
+                f"Edit failed ({exc}) and rollback was incomplete: " + "; ".join(rollback_errors)
             ) from exc
         if isinstance(exc, EditError):
             raise

@@ -170,7 +170,7 @@ def initialize_project(
     (root / ".localdev/runtime/frontier").mkdir(parents=True, exist_ok=True)
 
     gitignore = root / ".gitignore"
-    ignore_lines = [".localdev/runtime/", ".DS_Store"]
+    ignore_lines = [".localdev/runtime/", ".DS_Store", ".venv/", "__pycache__/", "*.pyc", "*.egg-info/"]
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
     additions = [line for line in ignore_lines if line not in existing.splitlines()]
     if additions:

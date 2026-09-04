@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +19,7 @@ class TaskWorkspace:
     path: Path
     integration_path: Path
     integration_branch: str
+    base_commit: str | None = None
 
 
 class GitRepository:
@@ -54,9 +54,7 @@ class GitRepository:
             check=False,
         )
         if check and completed.returncode != 0:
-            raise GitError(
-                f"git {' '.join(args)} failed in {cwd}:\n{completed.stderr.strip()}"
-            )
+            raise GitError(f"git {' '.join(args)} failed in {cwd}:\n{completed.stderr.strip()}")
         return completed
 
     def has_commits(self) -> bool:
@@ -101,14 +99,18 @@ class GitRepository:
         mapping = self.worktree_map()
         existing = mapping.get(config.integration_branch)
         if existing:
+            if not self.is_clean(existing):
+                raise GitError(f"Integration worktree is not clean: {existing}")
             return existing
         state = project_state_dir(self.root)
         integration_path = state / "worktrees" / "integration"
         if integration_path.exists():
-            shutil.rmtree(integration_path)
+            raise GitError(
+                f"Unregistered integration worktree path exists; preserve and inspect: {integration_path}"
+            )
         integration_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.branch_exists(config.integration_branch):
-            self._run(self.root, ["branch", config.integration_branch, "HEAD"])
+            self._run(self.root, ["branch", config.integration_branch, config.base_branch])
         self._run(
             self.root,
             ["worktree", "add", str(integration_path), config.integration_branch],
@@ -126,10 +128,11 @@ class GitRepository:
         state = project_state_dir(self.root)
         path = state / "worktrees" / "tasks" / slug
         if path.exists():
-            shutil.rmtree(path)
+            raise GitError(f"Task worktree already exists; refusing to reuse: {path}")
         if self.branch_exists(branch):
-            self._run(self.root, ["branch", "-D", branch])
+            raise GitError(f"Task branch already exists; refusing to reuse: {branch}")
         path.parent.mkdir(parents=True, exist_ok=True)
+        base_commit = self.resolve_ref(integration_path, "HEAD")
         self._run(
             self.root,
             [
@@ -138,7 +141,7 @@ class GitRepository:
                 "-b",
                 branch,
                 str(path),
-                config.integration_branch,
+                base_commit,
             ],
         )
         return TaskWorkspace(
@@ -147,6 +150,7 @@ class GitRepository:
             path=path,
             integration_path=integration_path,
             integration_branch=config.integration_branch,
+            base_commit=base_commit,
         )
 
     def diff(self, path: Path, base: str | None = None) -> str:
@@ -155,6 +159,8 @@ class GitRepository:
         args = ["diff", "--no-ext-diff", "--binary"]
         if base:
             args.append(base)
+        else:
+            args.append("HEAD")
         return self._run(path, args).stdout
 
     def status_porcelain(self, path: Path) -> str:
@@ -170,27 +176,45 @@ class GitRepository:
     def integrate(self, workspace: TaskWorkspace) -> str:
         if not self.is_clean(workspace.integration_path):
             raise GitError("Integration worktree became dirty; refusing to merge")
+        if (
+            workspace.base_commit
+            and self.resolve_ref(workspace.integration_path, "HEAD") != workspace.base_commit
+        ):
+            raise GitError(
+                "Integration advanced during the task; rebase and review the preserved task before integration"
+            )
         self._run(
             workspace.integration_path,
             ["merge", "--ff-only", workspace.branch],
         )
         return self._run(workspace.integration_path, ["rev-parse", "HEAD"]).stdout.strip()
 
-    def cleanup_task_workspace(self, workspace: TaskWorkspace, *, delete_branch: bool = True) -> None:
+    def cleanup_task_workspace(
+        self, workspace: TaskWorkspace, *, delete_branch: bool = True, force: bool = False
+    ) -> None:
+        expected = project_state_dir(self.root) / "worktrees" / "tasks"
+        if workspace.path.resolve().parent != expected.resolve():
+            raise GitError("Refusing cleanup outside registered task worktree directory")
+        if self.worktree_map().get(workspace.branch) != workspace.path.resolve():
+            raise GitError("Task worktree registration does not match the recorded branch/path")
+        if not force and not self.is_clean(workspace.path):
+            raise GitError("Refusing to remove a dirty task worktree without explicit --force")
         self._run(
             self.root,
-            ["worktree", "remove", "--force", str(workspace.path)],
-            check=False,
+            ["worktree", "remove", *(["--force"] if force else []), str(workspace.path)],
         )
         if delete_branch and self.branch_exists(workspace.branch):
-            self._run(self.root, ["branch", "-D", workspace.branch], check=False)
+            if self.is_ancestor(self.root, workspace.branch, workspace.integration_branch):
+                self._run(self.root, ["branch", "-d", workspace.branch], check=False)
 
     def list_files(self, path: Path) -> list[str]:
         completed = self._run(path, ["ls-files", "-co", "--exclude-standard"])
         return sorted(set(line for line in completed.stdout.splitlines() if line.strip()))
 
     def resolve_ref(self, path: Path, ref: str) -> str:
-        return self._run(path, ["rev-parse", ref]).stdout.strip()
+        return self._run(
+            path, ["rev-parse", "--verify", "--end-of-options", f"{ref}^{{commit}}"]
+        ).stdout.strip()
 
     def diff_between(self, path: Path, left: str, right: str = "HEAD") -> str:
         return self._run(path, ["diff", "--no-ext-diff", "--binary", f"{left}...{right}"]).stdout

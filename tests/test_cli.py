@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
+from localdev_mlx import __version__
 from localdev_mlx.cli import app
 
 runner = CliRunner()
@@ -10,7 +11,7 @@ runner = CliRunner()
 def test_version_option() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.stdout.strip() == "0.2.1"
+    assert result.stdout.strip() == __version__
 
 
 def test_help_lists_core_workflows() -> None:
