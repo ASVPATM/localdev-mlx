@@ -43,6 +43,9 @@ where = ["src"]
 [tool.setuptools.dynamic]
 version = {attr = "localdev_mlx.__version__"}
 
+[tool.uv]
+cache-keys = [{file = "pyproject.toml"}, {file = "src/localdev_mlx/__init__.py"}]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

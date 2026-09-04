@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 import pytest
 from rich.console import Console
 from rich.text import Text
@@ -9,6 +12,12 @@ from localdev_mlx import __version__
 from localdev_mlx.cli import app
 
 runner = CliRunner()
+
+
+def test_editable_cache_tracks_authoritative_version() -> None:
+    project = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    files = {entry.get("file") for entry in project["tool"]["uv"]["cache-keys"]}
+    assert {"pyproject.toml", "src/localdev_mlx/__init__.py"} <= files
 
 
 @pytest.mark.parametrize("force_color", [False, True])

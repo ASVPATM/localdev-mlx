@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -152,20 +154,54 @@ def test_cli_cancel_marker_and_diagnostics(sample_repo, monkeypatch):
 
 
 def test_cancel_command_interrupts_active_request(sample_repo, global_config):
+    from localdev_mlx import config as config_module
+
     class Waiting(MockStructuredProvider):
+        request_started = None
+        cancellation_process = None
+
         def complete_structured(self, **kwargs):
             store = TaskStore(sample_repo)
             current = store.list()[0]
-            result = CliRunner().invoke(app, ["cancel", current.id, "--repo", str(sample_repo)])
-            assert result.exit_code == 0
-            time.sleep(5)
+            self.request_started = time.monotonic()
+            # Match real use: a second CLI process sends the cancellation marker.
+            # An in-process CliRunner can catch the active task's SIGALRM as its
+            # own KeyboardInterrupt, converting cancellation into an assertion failure.
+            self.cancellation_process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-m",
+                    "localdev_mlx",
+                    "cancel",
+                    current.id,
+                    "--repo",
+                    str(sample_repo),
+                ],
+                env={**os.environ, "LOCALDEV_MLX_HOME": str(config_module.DATA_ROOT)},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(10)
 
-    started = time.monotonic()
-    task = TaskRunner(global_config=global_config, provider=Waiting(), manage_models=False).run(
-        repository=sample_repo, kind=TaskKind.BUG, description="repair"
-    )
+    provider = Waiting()
+    try:
+        task = TaskRunner(global_config=global_config, provider=provider, manage_models=False).run(
+            repository=sample_repo, kind=TaskKind.BUG, description="repair"
+        )
+    finally:
+        if provider.cancellation_process is not None:
+            try:
+                _, error = provider.cancellation_process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                provider.cancellation_process.kill()
+                provider.cancellation_process.communicate()
+                raise
+    assert provider.cancellation_process is not None
+    assert provider.cancellation_process.returncode == 0, error
     assert task.status == TaskStatus.CANCELLED
-    assert time.monotonic() - started < 2
+    assert time.monotonic() - provider.request_started < 5
     assert task.external_review_state == ExternalReviewState.NONE
 
 
