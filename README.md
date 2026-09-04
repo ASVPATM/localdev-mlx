@@ -64,6 +64,46 @@ localdev-mlx doctor --prepare --repo .
 
 Preparation and baseline tests run in a fresh task worktree before inference. Ambient `PYTHONPATH` and activated Python environments are not inherited; declare necessary project-specific test variables in `[tests.env]`. Missing tools, collection failures, and preparation errors stop as diagnostics.
 
+## Commands
+
+Prefix each command with `localdev-mlx`. Use `--help` for options and `--repo PATH` on project workflows when running outside the project directory.
+
+| Command | Purpose |
+|---|---|
+| `configure MODEL_ID` | Configure the local models and server executable. |
+| `doctor` | Check setup; add `--prepare` to validate a fresh project worktree. |
+| `diagnostics` | Show executable, interpreter, package path, and versions. |
+| `init PATH` | Initialize a Git project for LocalDev. |
+| `idea "DESCRIPTION"` | Turn a project idea into a brief, provisional architecture, and review prompt. |
+| `plan "INSTRUCTIONS"` | Create architecture, contracts, and a dependency-ordered task queue. |
+| `run-queue` | Execute ready queue entries; defaults to one task. |
+| `bug "DESCRIPTION"` | Implement, test, and review a bug fix. |
+| `feature "DESCRIPTION"` | Implement, test, and review a bounded feature. |
+| `tweak "DESCRIPTION"` | Make a small adjustment through the same safety gates. |
+| `status` | List local task outcomes and external-review states. |
+| `follow [TASK-ID]` | Follow task progress; defaults to the newest task. |
+| `show-task TASK-ID` / `explain-task TASK-ID` | Inspect complete stored task state. |
+| `cancel TASK-ID` | Request cancellation of an active task. |
+| `cleanup TASK-ID` | Remove a stopped task's worktree while preserving artifacts. |
+| `export-review TASK-ID` | Export a task's external-review bundle. |
+| `release-candidate` | Run full validation and prepare an independent release-review bundle. |
+| `frontier defer KIND "DESCRIPTION"` | Save a bug, feature, tweak, or audit without inference. |
+| `frontier defer-file FILE.json` | Import multiple deferred issues. |
+| `frontier status` | List frontier issues and batches. |
+| `frontier bundle` | Bundle open issues with the latest integration state. |
+| `frontier resolve --task TASK-ID --commit COMMIT` | Record an issue as externally resolved; `--batch` can select a batch. |
+| `frontier reopen --task TASK-ID` | Reopen an external-review item. |
+| `frontier supersede --task TASK-ID` | Close an obsolete or duplicate external-review item. |
+| `frontier sync --from BRANCH` | Fast-forward integration to externally committed fixes. |
+| `model status` | Inspect managed model-server state. |
+| `model start PROFILE` | Load a configured model or role. |
+| `model stop` | Stop the verified managed server. |
+| `model logs` | Show recent server logs. |
+| `model probe PROFILE` | Check structured output; add `--capabilities` for workflow-schema probes. |
+| `sample create PATH` | Create a disposable project with an intentional bug. |
+| `sample mock-run PATH` | Exercise the sample workflow without loading models. |
+| `guide` | Explain the workflow and outcomes. |
+
 ## Workflows
 
 ```bash
@@ -119,8 +159,6 @@ localdev-mlx release-candidate --repo .
 Batches include unresolved issues and the latest integration snapshot/diff, not just historical task patches. Visible copies are ignored under `.localdev/runtime/`. Resolve selected issues with repeated `--task` options; use `frontier reopen` or `frontier supersede` to maintain explicit history. Independent work may continue while dependent queue entries remain blocked. Release-candidate preparation never publishes a release.
 
 Models unload automatically unless `--keep-model-loaded` is supplied. `localdev-mlx model status` and `model stop` inspect or stop the verified managed process; unrelated servers are not killed.
-
-Project design and queue commands remain available: `idea`, `plan`, and `run-queue`. Use command help for their existing project-document workflow.
 
 ## Validate the tool
 
