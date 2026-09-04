@@ -221,20 +221,33 @@ class TaskRunner:
         config: ProjectConfig,
         triage: TriageResult,
         baseline_tests: str,
+        baseline_passed: bool,
     ) -> tuple[TestRunResult, list[ImplementationResult]]:
         profile = self._worker_profile()
         self._ensure_profile(task.id, "worker", profile)
         implementations: list[ImplementationResult] = []
         latest_tests: TestRunResult | None = None
+        carried_context: list[str] = []
+        total_units = len(triage.work_units)
 
         for index, unit in enumerate(triage.work_units, start=1):
+            verb = "analyzing" if unit.mode == "analysis" else "implementing"
             self._save_task(
                 store,
                 task,
                 TaskStatus.IMPLEMENTING,
-                f"Worker implementing unit {index}/{len(triage.work_units)}: {unit.title}",
+                f"Worker {verb} unit {index}/{total_units}: {unit.title}",
             )
-            failures = baseline_tests if index == 1 else ""
+            failure_parts: list[str] = []
+            if latest_tests is None:
+                failure_parts.append(baseline_tests)
+            elif not latest_tests.passed:
+                failure_parts.append(render_tests(latest_tests))
+            if carried_context:
+                failure_parts.append(
+                    "Findings from earlier work units:\n" + "\n".join(carried_context)
+                )
+            failures = "\n\n".join(part for part in failure_parts if part)
             completed = False
 
             for attempt in range(1, config.max_repair_rounds + 2):
@@ -247,7 +260,7 @@ class TaskRunner:
                 )
                 with self.progress.operation(
                     task.id,
-                    f"Worker inference for unit {index}/{len(triage.work_units)}, attempt {attempt}",
+                    f"Worker inference for unit {index}/{total_units}, attempt {attempt}",
                 ):
                     result = self.agents.implement(
                         profile=profile,
@@ -263,6 +276,81 @@ class TaskRunner:
                     result,
                 )
                 implementations.append(result)
+
+                if result.needs_escalation:
+                    raise WorkflowError(
+                        result.escalation_reason or "Worker requested escalation"
+                    )
+
+                if unit.mode == "analysis":
+                    if result.edits:
+                        failures = (
+                            "This is a read-only analysis unit, but the worker returned file edits. "
+                            "Return findings only and set no_changes_needed=true."
+                        )
+                        if attempt > config.max_repair_rounds:
+                            raise WorkflowError(failures)
+                        continue
+                    carried_context.append(
+                        f"{unit.title}: {result.summary}"
+                        + (
+                            " Notes: " + "; ".join(result.notes)
+                            if result.notes
+                            else ""
+                        )
+                    )
+                    self.progress.emit(
+                        f"[{task.id}] ANALYZED — unit {index}/{total_units} completed "
+                        "without repository edits"
+                    )
+                    completed = True
+                    break
+
+                if not result.edits:
+                    remaining_units = triage.work_units[index:]
+                    remaining_edit_units = any(
+                        candidate.mode == "edit" for candidate in remaining_units
+                    )
+                    if remaining_edit_units:
+                        carried_context.append(
+                            f"{unit.title}: worker returned no edits. {result.summary}"
+                        )
+                        self.progress.emit(
+                            f"[{task.id}] NO-CHANGE — unit {index}/{total_units} "
+                            "returned no edits; continuing to later edit units"
+                        )
+                        completed = True
+                        break
+
+                    self._save_task(
+                        store,
+                        task,
+                        TaskStatus.TESTING,
+                        f"Verifying no-change result for unit {index}",
+                    )
+                    with self.progress.operation(
+                        task.id, f"Quick tests for no-change unit {index}"
+                    ):
+                        latest_tests = run_tests(workspace.path, config.tests, "quick")
+                    test_text = render_tests(latest_tests)
+                    store.write_text(
+                        task.id,
+                        f"unit-{index:02d}-attempt-{attempt}-tests.txt",
+                        test_text,
+                    )
+                    if latest_tests.passed:
+                        completed = True
+                        break
+                    failures = (
+                        "The worker returned no edits, but the configured quick tests still fail. "
+                        "Provide concrete edits for the allowlisted paths or request escalation.\n\n"
+                        + test_text
+                    )
+                    if attempt > config.max_repair_rounds:
+                        raise WorkflowError(
+                            f"Worker returned no edits for failing work unit {unit.title!r}"
+                        )
+                    continue
 
                 try:
                     self._apply_result(
@@ -299,6 +387,23 @@ class TaskRunner:
                 if latest_tests.passed:
                     completed = True
                     break
+
+                remaining_units = triage.work_units[index:]
+                remaining_edit_units = any(
+                    candidate.mode == "edit" for candidate in remaining_units
+                )
+                if task.kind == TaskKind.BUG and not baseline_passed and remaining_edit_units:
+                    carried_context.append(
+                        f"After {unit.title}, quick validation still failed; later units must "
+                        f"resolve the remaining failures.\n{test_text}"
+                    )
+                    self.progress.emit(
+                        f"[{task.id}] DEFERRED — quick tests still fail after unit "
+                        f"{index}/{total_units}; continuing cumulative bug repair"
+                    )
+                    completed = True
+                    break
+
                 failures = test_text
                 if attempt > config.max_repair_rounds:
                     raise WorkflowError(f"Quick tests failed for work unit {unit.title!r}")
@@ -306,8 +411,21 @@ class TaskRunner:
             if not completed:
                 raise WorkflowError(f"Worker did not complete work unit {unit.title!r}")
 
-        if latest_tests is None:
-            raise WorkflowError("No implementation work units were completed")
+        self._save_task(
+            store,
+            task,
+            TaskStatus.TESTING,
+            "Running final quick validation after all work units",
+        )
+        with self.progress.operation(task.id, "Final quick validation after work units"):
+            latest_tests = run_tests(workspace.path, config.tests, "quick")
+        final_test_text = render_tests(latest_tests)
+        store.write_text(task.id, "tests-after-work-units.txt", final_test_text)
+        if not latest_tests.passed:
+            raise WorkflowError(
+                "Quick tests still fail after all planned work units. "
+                "The remaining failures are preserved in tests-after-work-units.txt."
+            )
         return latest_tests, implementations
 
     def _review(
@@ -506,6 +624,7 @@ This change was generated and reviewed locally. Include it in the independent re
                 config=config,
                 triage=triage,
                 baseline_tests=baseline_text,
+                baseline_passed=baseline.passed,
             )
 
             review = self._review(

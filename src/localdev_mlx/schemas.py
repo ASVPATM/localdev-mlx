@@ -46,6 +46,7 @@ class RiskLevel(StrEnum):
 
 
 class WorkUnit(StrictModel):
+    mode: Literal["edit", "analysis"] = "edit"
     title: str = Field(min_length=1, max_length=160)
     goal: str = Field(min_length=1, max_length=3000)
     allowed_paths: list[str] = Field(default_factory=list, max_length=30)
@@ -123,6 +124,7 @@ class ImplementationResult(StrictModel):
     edits: list[FileEdit] = Field(default_factory=list, max_length=30)
     tests_added_or_changed: list[str] = Field(default_factory=list, max_length=30)
     notes: list[str] = Field(default_factory=list, max_length=30)
+    no_changes_needed: bool = False
     needs_escalation: bool = False
     escalation_reason: str | None = Field(default=None, max_length=3000)
 
@@ -130,8 +132,10 @@ class ImplementationResult(StrictModel):
     def escalation_consistency(self) -> ImplementationResult:
         if self.needs_escalation and not self.escalation_reason:
             raise ValueError("needs_escalation requires escalation_reason")
-        if not self.needs_escalation and not self.edits:
-            raise ValueError("Implementation must include edits or request escalation")
+        if self.needs_escalation and self.no_changes_needed:
+            raise ValueError("An implementation cannot request escalation and no-change completion")
+        if self.no_changes_needed and self.edits:
+            raise ValueError("no_changes_needed cannot be combined with file edits")
         return self
 
 

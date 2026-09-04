@@ -16,9 +16,37 @@ def test_replace_text_requires_both_values() -> None:
         FileEdit(operation="replace_text", path="x.py", old_text="x", reason="missing new")
 
 
-def test_non_escalating_implementation_requires_edits() -> None:
+def test_non_escalating_implementation_can_report_no_edits() -> None:
+    result = ImplementationResult(summary="Inspection found no edit to apply")
+    assert result.edits == []
+    assert result.needs_escalation is False
+
+
+def test_no_change_flag_cannot_be_combined_with_edits() -> None:
     with pytest.raises(ValidationError):
-        ImplementationResult(summary="nothing")
+        ImplementationResult(
+            summary="conflicting result",
+            no_changes_needed=True,
+            edits=[
+                FileEdit(
+                    operation="create",
+                    path="x.py",
+                    content="x = 1\n",
+                    reason="test",
+                )
+            ],
+        )
+
+
+def test_work_unit_supports_read_only_analysis_mode() -> None:
+    unit = WorkUnit(
+        mode="analysis",
+        title="Inspect current behavior",
+        goal="Record findings for later edit units.",
+        read_paths=["src/example.py"],
+    )
+    assert unit.mode == "analysis"
+    assert unit.allowed_paths == []
 
 
 def test_escalated_triage_requires_reason() -> None:

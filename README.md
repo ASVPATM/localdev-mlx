@@ -162,6 +162,8 @@ localdev-mlx tweak "Describe the small adjustment" --repo .
 
 Choose inference depth with `--depth fast`, `balanced`, or `deep`. Every depth still attempts real edits, runs tests, requests reviewer-model approval, and either commits the result or creates a review bundle.
 
+Planner inspection steps can be carried forward without forcing fake edits, and bug fixes may be split across cumulative work units before the final validation gate.
+
 Inspect work:
 
 ```bash

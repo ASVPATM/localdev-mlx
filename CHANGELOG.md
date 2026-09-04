@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Keep read-only or no-change worker units from aborting a task before later edit units run.
+- Guide planners to place reproduction and inspection steps in the reproduction plan, or mark them as analysis units.
+- Allow cumulative multi-unit bug repairs when the baseline suite already fails.
+- Run a final quick validation after all work units before local review.
+
 ## 0.1.2
 
 - Make the bundled sample and mock pipeline independent of the caller's `PYTHONPATH`.
