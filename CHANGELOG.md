@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Runs cancellation regression checks through a separate CLI process, preventing the test harness from intercepting the active task's signal.
+- Tracks the authoritative version file in `uv` cache inputs so editable-install metadata refreshes after version changes. Workflow behavior is unchanged from 0.3.0.
+
 ## 0.3.0
 
 - Adds durable task phases, bounded requests/attempts, cancellation, and inspectable failure artifacts.
