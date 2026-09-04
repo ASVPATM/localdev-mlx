@@ -79,6 +79,17 @@ def _handle_error(exc: Exception) -> None:
     raise typer.Exit(1) from exc
 
 
+def _parse_test_env(values: list[str] | None) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw in values or []:
+        key, separator, value = raw.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            raise ValueError(f"Invalid --test-env value {raw!r}; expected KEY=VALUE")
+        result[key] = value
+    return result
+
+
 def _mock_global() -> GlobalConfig:
     profile = ModelProfile(
         name="mock",
@@ -95,8 +106,18 @@ def _mock_global() -> GlobalConfig:
 
 
 def _cleanup_models(config: GlobalConfig, *, keep_model_loaded: bool) -> None:
-    if config.stop_after_run and not keep_model_loaded:
+    if not config.stop_after_run or keep_model_loaded:
+        return
+    try:
         ModelManager().stop()
+    except Exception as exc:  # Cleanup must not hide a successful workflow result.
+        console.print(
+            "Warning: the model request succeeded, but automatic MLX shutdown failed. "
+            f"Run 'localdev-mlx model status' and then 'localdev-mlx model stop'. "
+            f"Details: {exc}",
+            style="yellow",
+            markup=False,
+        )
 
 
 def _run_maintenance(
@@ -299,6 +320,10 @@ def init_project(
         list[str] | None,
         typer.Option("--full-test", help="Approved full test command; repeatable."),
     ] = None,
+    test_env: Annotated[
+        list[str] | None,
+        typer.Option("--test-env", help="Test environment variable as KEY=VALUE; repeatable."),
+    ] = None,
     base_branch: Annotated[
         str | None,
         typer.Option("--base-branch", help="Release branch; defaults to the current branch."),
@@ -318,6 +343,7 @@ def init_project(
             repository,
             quick_tests=quick_test,
             full_tests=full_test,
+            test_env=_parse_test_env(test_env),
             switch_integration=True,
             base_branch=base_branch,
             integration_branch=integration_branch,
@@ -733,6 +759,7 @@ def sample_create(
             target,
             quick_tests=["python3 -m unittest discover -s tests -v"],
             full_tests=["python3 -m unittest discover -s tests -v"],
+            test_env={"PYTHONPATH": "src"},
         )
         subprocess.run(["git", "-C", str(root), "add", "."], check=True)
         subprocess.run(["git", "-C", str(root), "commit", "-m", "chore: initialize LocalDev MLX"], check=True, capture_output=True)

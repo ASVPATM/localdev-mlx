@@ -132,6 +132,14 @@ localdev-mlx init . \
   --full-test "uv run ruff check ."
 ```
 
+Projects that need test-only environment variables can add repeatable options:
+
+```bash
+localdev-mlx init . \
+  --quick-test "python3 -m unittest discover -s tests -v" \
+  --test-env PYTHONPATH=src
+```
+
 LocalDev creates an `ai/integration` branch. Local work is not merged directly into `main`.
 
 ## Use

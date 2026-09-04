@@ -4,14 +4,13 @@ from typer.testing import CliRunner
 
 from localdev_mlx.cli import app
 
-
 runner = CliRunner()
 
 
 def test_version_option() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.stdout.strip() == "0.1.0"
+    assert result.stdout.strip() == "0.1.2"
 
 
 def test_help_lists_core_workflows() -> None:

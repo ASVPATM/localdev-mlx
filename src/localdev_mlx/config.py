@@ -394,6 +394,7 @@ def write_default_project_config(
     *,
     quick_tests: list[str] | None = None,
     full_tests: list[str] | None = None,
+    test_env: dict[str, str] | None = None,
     base_branch: str = "main",
     integration_branch: str = "ai/integration",
 ) -> Path:
@@ -401,9 +402,14 @@ def write_default_project_config(
     path.parent.mkdir(parents=True, exist_ok=True)
     quick_tests = quick_tests or []
     full_tests = full_tests or quick_tests
+    test_env = test_env or {}
 
     def toml_array(values: list[str]) -> str:
         return "[" + ", ".join(_quote(value) for value in values) + "]"
+
+    test_env_lines = "\n".join(
+        f"{_quote(key)} = {_quote(value)}" for key, value in sorted(test_env.items())
+    )
 
     content = f'''integration_branch = {_quote(integration_branch)}
 base_branch = {_quote(base_branch)}
@@ -443,6 +449,7 @@ allowed_executables = [
 ]
 
 [tests.env]
+{test_env_lines}
 '''
     path.write_text(content, encoding="utf-8")
     return path

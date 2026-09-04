@@ -5,7 +5,6 @@ from pathlib import Path
 from localdev_mlx.config import write_default_project_config
 from localdev_mlx.git.repository import GitError, GitRepository
 
-
 AGENTS_TEMPLATE = """# AGENTS.md
 
 ## Authority order
@@ -109,6 +108,7 @@ def initialize_project(
     *,
     quick_tests: list[str] | None = None,
     full_tests: list[str] | None = None,
+    test_env: dict[str, str] | None = None,
     switch_integration: bool = True,
     base_branch: str | None = None,
     integration_branch: str = "ai/integration",
@@ -142,6 +142,7 @@ def initialize_project(
             root,
             quick_tests=quick_tests,
             full_tests=full_tests,
+            test_env=test_env,
             base_branch=selected_base,
             integration_branch=integration_branch,
         )

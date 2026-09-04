@@ -10,7 +10,12 @@ from localdev_mlx.schemas import TaskKind, TaskStatus
 from localdev_mlx.workflows.task_runner import TaskRunner
 
 
-def test_mock_bug_pipeline_integrates(sample_repo: Path, global_config) -> None:
+def test_mock_bug_pipeline_integrates(
+    sample_repo: Path,
+    global_config,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
     messages: list[str] = []
     runner = TaskRunner(
         global_config=global_config,

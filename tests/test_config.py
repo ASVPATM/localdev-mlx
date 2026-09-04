@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from localdev_mlx.config import load_global_config, write_global_config
+from localdev_mlx.config import (
+    load_global_config,
+    load_project_config,
+    write_default_project_config,
+    write_global_config,
+)
 
 
 def test_one_model_can_fill_every_role(tmp_path: Path) -> None:
@@ -56,3 +61,15 @@ def test_configure_supports_non_thinking_models_and_server_args(tmp_path: Path) 
         "--kv-bits",
         "4",
     )
+
+
+def test_project_config_writes_test_environment(tmp_path: Path) -> None:
+    write_default_project_config(
+        tmp_path,
+        quick_tests=["python3 -m unittest"],
+        test_env={"PYTHONPATH": "src", "APP_MODE": "test"},
+    )
+
+    config = load_project_config(tmp_path)
+
+    assert config.tests.env == {"APP_MODE": "test", "PYTHONPATH": "src"}

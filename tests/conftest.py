@@ -84,6 +84,7 @@ def sample_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         repository,
         quick_tests=["python3 -m unittest discover -s tests -v"],
         full_tests=["python3 -m unittest discover -s tests -v"],
+        test_env={"PYTHONPATH": "src"},
     )
     subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
     subprocess.run(

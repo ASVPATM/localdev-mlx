@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from localdev_mlx.config import ModelProfile, STATE_ROOT
+from localdev_mlx.config import STATE_ROOT, ModelProfile
 
 
 class ModelManagerError(RuntimeError):
@@ -213,36 +213,90 @@ class ModelManager:
             f"See {self.log_path}"
         )
 
+    @staticmethod
+    def _signal_pid(pid: int, sig: signal.Signals) -> None:
+        """Signal only the managed server PID.
+
+        ``mlx_vlm.server`` runs as a single Python server process. Targeting the
+        recorded PID is safer than assuming that the PID is also a process-group
+        ID, an assumption that can fail on macOS during shutdown.
+        """
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        except PermissionError as exc:
+            raise ModelManagerError(
+                f"Permission denied while sending {sig.name} to managed MLX PID {pid}."
+            ) from exc
+
+    def _wait_until_stopped(
+        self,
+        *,
+        pid: int,
+        host: str,
+        port: int,
+        timeout_seconds: float,
+    ) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            # A terminated child may briefly remain as a zombie, for which
+            # os.kill(pid, 0) still reports success. Once the listening socket
+            # is closed, the managed server is no longer serving or retaining
+            # the model and cleanup can safely finish.
+            if not self._pid_alive(pid) or not self._port_open(host, port):
+                return True
+            time.sleep(0.25)
+        return not self._pid_alive(pid) or not self._port_open(host, port)
+
     def stop(self) -> None:
         state = self._read_state()
         if not state:
             return
+
         pid = int(state.get("pid", 0))
+        host = str(state.get("host", "127.0.0.1"))
+        port = int(state.get("port", 8080))
+
         if pid <= 0 or not self._pid_alive(pid):
             self.state_path.unlink(missing_ok=True)
             return
-        host = str(state.get("host", "127.0.0.1"))
-        port = int(state.get("port", 8080))
+
+        # A stale state file must never cause LocalDev to signal an unrelated
+        # process that later reused the recorded PID. If the managed endpoint is
+        # already gone, discard the stale state instead.
+        if not self._port_open(host, port):
+            self.state_path.unlink(missing_ok=True)
+            return
+
         try:
             httpx.post(f"http://{host}:{port}/unload", timeout=10)
         except httpx.HTTPError:
             pass
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
+
+        self._signal_pid(pid, signal.SIGTERM)
+        if self._wait_until_stopped(
+            pid=pid,
+            host=host,
+            port=port,
+            timeout_seconds=20,
+        ):
             self.state_path.unlink(missing_ok=True)
             return
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            if not self._pid_alive(pid):
-                self.state_path.unlink(missing_ok=True)
-                return
-            time.sleep(0.25)
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        self.state_path.unlink(missing_ok=True)
+
+        self._signal_pid(pid, signal.SIGKILL)
+        if self._wait_until_stopped(
+            pid=pid,
+            host=host,
+            port=port,
+            timeout_seconds=5,
+        ):
+            self.state_path.unlink(missing_ok=True)
+            return
+
+        raise ModelManagerError(
+            f"Managed MLX server PID {pid} is still listening on {host}:{port} after shutdown."
+        )
 
     def log_tail(self, lines: int = 80) -> str:
         if not self.log_path.exists():
