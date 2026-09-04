@@ -16,14 +16,24 @@ Return only data that satisfies the requested JSON schema.
 def triage_system() -> str:
     return f"""{COMMON_RULES}
 
-You are the PLANNER. Inspect the supplied repository map and context, classify risk, identify relevant files, and split the task into small dependency-ordered work units. Each edit unit must have a narrow write allowlist and concrete acceptance criteria.
+You are the PLANNER. Inspect the supplied repository map, exact repository context, and any controller-generated baseline test output. Classify risk, identify relevant files, and split the task into small dependency-ordered work units. Each edit unit must have a narrow write allowlist and concrete acceptance criteria.
 Put reproduction, inspection, and contract-confirmation steps in reproduction_plan rather than creating standalone worker units. Work units should normally be concrete repository edits. If a truly read-only unit is unavoidable, set mode="analysis", keep its write allowlist empty, and make later edit units consume its findings. Never use an edit unit merely to ask the worker to inspect or reproduce a problem.
-For bug tasks whose baseline may already fail, organize units so fixes can be cumulative; do not assume the full test suite will pass after every intermediate unit.
+For bug tasks whose baseline may already fail, organize units so fixes can be cumulative; do not assume the full test suite will pass after every intermediate unit. Every explicit defect, numbered requirement, acceptance criterion, and distinct baseline failure must be covered by at least one work unit or called out in escalation_reasons/external_questions. Never silently omit requested work. Include the exact implementation and test paths a worker needs to make each edit.
 Request external review for major architecture changes, destructive migrations, authentication/authorization, cryptography, high-risk concurrency, security-sensitive code, or work whose correctness cannot be established from the supplied repository evidence.
 """
 
 
-def triage_user(kind: TaskKind, description: str, context: str) -> str:
+def triage_user(
+    kind: TaskKind,
+    description: str,
+    context: str,
+    baseline_tests: str = "",
+) -> str:
+    baseline = (
+        f"\n# Actual baseline validation produced by the controller\n{baseline_tests}\n"
+        if baseline_tests
+        else ""
+    )
     return f"""# Task
 Kind: {kind.value}
 
@@ -31,8 +41,8 @@ Kind: {kind.value}
 
 # Repository context
 {context}
-
-Create a practical implementation plan. Prefer the smallest safe change. Do not include unrelated cleanup.
+{baseline}
+Create a practical implementation plan. Prefer the smallest safe change. Do not include unrelated cleanup. Before returning, verify that every explicit requested defect and every distinct baseline failure is covered by a concrete work unit or is explicitly escalated.
 """
 
 
@@ -40,7 +50,7 @@ def implementation_system() -> str:
     return f"""{COMMON_RULES}
 
 You are the WORKER. Return deterministic file edit operations only for paths in the enforced write allowlist. Preserve established interfaces unless the work unit explicitly authorizes a change. Add or update tests when behavior changes.
-For mode="edit", make the smallest concrete edits needed. If the current files already satisfy the unit, return no edits, set no_changes_needed=true, and explain the evidence in notes. Do not return an empty edit result merely to summarize the task.
+For mode="edit", make the smallest concrete edits needed. If controller-provided tests fail for behavior named by the work unit, you must either return concrete edits for the allowlisted paths or request escalation with a precise reason. If the current files already satisfy the unit, return no edits, set no_changes_needed=true, and explain the exact evidence in notes. Do not return an empty edit result merely to summarize the task. Prefer replace_file when an exact replace_text operation would be fragile or uncertain.
 For mode="analysis", do not edit files; return the findings in summary and notes with no_changes_needed=true.
 Do not claim tests passed; the controller runs them. If the task cannot be completed safely from the supplied context, set needs_escalation=true.
 """

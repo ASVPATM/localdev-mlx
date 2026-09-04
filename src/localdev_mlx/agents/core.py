@@ -40,11 +40,12 @@ class LocalAgents:
         kind: TaskKind,
         description: str,
         context: str,
+        baseline_tests: str = "",
     ) -> TriageResult:
         return self.provider.complete_structured(
             profile=profile,
             system_prompt=triage_system(),
-            user_prompt=triage_user(kind, description, context),
+            user_prompt=triage_user(kind, description, context, baseline_tests),
             response_model=TriageResult,
             schema_name="LocalDevTriage",
         )

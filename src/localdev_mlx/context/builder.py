@@ -78,6 +78,7 @@ def build_context(
     requested_paths: list[str] | tuple[str, ...] = (),
     char_budget: int,
     include_map: bool = True,
+    requested_first: bool = False,
 ) -> ContextBundle:
     repository_map = build_repository_map(root) if include_map else ""
     budget = max(0, char_budget - len(repository_map))
@@ -86,32 +87,29 @@ def build_context(
     included: list[str] = []
     omitted: list[str] = []
 
-    for relative in config.stable_docs:
-        content = _safe_read(root, relative, config)
-        if content is None:
-            continue
-        rendered = _render_file(relative, content)
-        if len(rendered) > budget:
-            omitted.append(relative)
-            continue
-        stable_sections.append(rendered)
-        included.append(relative)
-        budget -= len(rendered)
+    def add_paths(paths: tuple[str, ...] | list[str], sections: list[str]) -> None:
+        nonlocal budget
+        for relative in dict.fromkeys(paths):
+            if relative in included:
+                continue
+            content = _safe_read(root, relative, config)
+            if content is None:
+                omitted.append(relative)
+                continue
+            rendered = _render_file(relative, content)
+            if len(rendered) > budget:
+                omitted.append(relative)
+                continue
+            sections.append(rendered)
+            included.append(relative)
+            budget -= len(rendered)
 
-    for relative in dict.fromkeys(requested_paths):
-        if relative in included:
-            continue
-        content = _safe_read(root, relative, config)
-        if content is None:
-            omitted.append(relative)
-            continue
-        rendered = _render_file(relative, content)
-        if len(rendered) > budget:
-            omitted.append(relative)
-            continue
-        selected_sections.append(rendered)
-        included.append(relative)
-        budget -= len(rendered)
+    if requested_first:
+        add_paths(list(requested_paths), selected_sections)
+        add_paths(list(config.stable_docs), stable_sections)
+    else:
+        add_paths(list(config.stable_docs), stable_sections)
+        add_paths(list(requested_paths), selected_sections)
 
     return ContextBundle(
         repository_map=repository_map,

@@ -14,7 +14,7 @@ from localdev_mlx.execution import run_tests
 from localdev_mlx.git import EditError, GitRepository, TaskWorkspace, apply_edits
 from localdev_mlx.models import ModelManager
 from localdev_mlx.progress import ProgressReporter, format_duration
-from localdev_mlx.providers.base import StructuredProvider
+from localdev_mlx.providers.base import ProviderError, StructuredProvider
 from localdev_mlx.schemas import (
     ImplementationResult,
     ReviewResult,
@@ -98,6 +98,18 @@ class TaskRunner:
     def _worker_profile(self) -> ModelProfile:
         return self._limited_profile(self.global_config.worker, role="worker")
 
+    def _fallback_worker_profile(self, primary: ModelProfile) -> ModelProfile | None:
+        """Return an alternate configured local profile when the worker stalls.
+
+        The planner is the default local promotion target because two-model setups
+        commonly assign the more capable model to planning and review.  Promotion
+        is skipped when it would select the same underlying model.
+        """
+        for candidate in (self.global_config.planner, self.global_config.reviewer):
+            if candidate.model != primary.model:
+                return self._limited_profile(candidate, role="worker")
+        return None
+
     def _reviewer_profile(self) -> ModelProfile:
         return self._limited_profile(self.global_config.reviewer, role="reviewer")
 
@@ -124,6 +136,7 @@ class TaskRunner:
         store: TaskStore,
         root: Path,
         config: ProjectConfig,
+        baseline_tests: str = "",
     ) -> TriageResult:
         self._save_task(
             store,
@@ -149,6 +162,7 @@ class TaskRunner:
                 kind=task.kind,
                 description=task.description,
                 context=context,
+                baseline_tests=baseline_tests,
             )
         task.triage = triage
         store.write_json(task.id, "triage.json", triage)
@@ -160,14 +174,19 @@ class TaskRunner:
         workspace: TaskWorkspace,
         config: ProjectConfig,
         unit: WorkUnit,
+        *,
+        additional_paths: list[str] | tuple[str, ...] = (),
     ) -> str:
-        requested = list(dict.fromkeys([*unit.read_paths, *unit.allowed_paths]))
+        requested = list(
+            dict.fromkeys([*additional_paths, *unit.read_paths, *unit.allowed_paths])
+        )
         return build_context(
             workspace.path,
             config,
             requested_paths=requested,
             char_budget=config.worker_context_chars,
             include_map=False,
+            requested_first=True,
         ).render()
 
     def _review_context(
@@ -186,6 +205,7 @@ class TaskRunner:
             requested_paths=list(dict.fromkeys(requested)),
             char_budget=config.reviewer_context_chars,
             include_map=False,
+            requested_first=True,
         ).render()
 
     @staticmethod
@@ -223,8 +243,8 @@ class TaskRunner:
         baseline_tests: str,
         baseline_passed: bool,
     ) -> tuple[TestRunResult, list[ImplementationResult]]:
-        profile = self._worker_profile()
-        self._ensure_profile(task.id, "worker", profile)
+        primary_profile = self._worker_profile()
+        fallback_profile = self._fallback_worker_profile(primary_profile)
         implementations: list[ImplementationResult] = []
         latest_tests: TestRunResult | None = None
         carried_context: list[str] = []
@@ -249,27 +269,63 @@ class TaskRunner:
                 )
             failures = "\n\n".join(part for part in failure_parts if part)
             completed = False
+            active_profile = primary_profile
+            promoted = False
+            self._ensure_profile(task.id, "worker", active_profile)
+
+            def promote(reason: str) -> bool:
+                nonlocal active_profile, promoted
+                if fallback_profile is None or promoted:
+                    return False
+                promoted = True
+                active_profile = fallback_profile
+                self.progress.emit(
+                    f"[{task.id}] PROMOTING — {reason}; retrying unit {index}/{total_units} "
+                    f"with alternate local model {active_profile.model}"
+                )
+                self._ensure_profile(task.id, "fallback worker", active_profile)
+                return True
 
             for attempt in range(1, config.max_repair_rounds + 2):
                 task.attempts += 1
-                context = self._worker_context(workspace, config, unit)
+                context = self._worker_context(
+                    workspace,
+                    config,
+                    unit,
+                    additional_paths=triage.relevant_paths,
+                )
                 store.write_text(
                     task.id,
                     f"unit-{index:02d}-attempt-{attempt}-context.txt",
                     context,
                 )
-                with self.progress.operation(
-                    task.id,
-                    f"Worker inference for unit {index}/{total_units}, attempt {attempt}",
-                ):
-                    result = self.agents.implement(
-                        profile=profile,
-                        kind=task.kind,
-                        description=task.description,
-                        unit=unit,
-                        context=context,
-                        previous_failures=failures,
+                try:
+                    with self.progress.operation(
+                        task.id,
+                        f"Worker inference for unit {index}/{total_units}, "
+                        f"attempt {attempt} ({active_profile.model})",
+                    ):
+                        result = self.agents.implement(
+                            profile=active_profile,
+                            kind=task.kind,
+                            description=task.description,
+                            unit=unit,
+                            context=context,
+                            previous_failures=failures,
+                        )
+                except ProviderError as exc:
+                    failures = f"Worker model response failed: {exc}"
+                    store.write_text(
+                        task.id,
+                        f"unit-{index:02d}-attempt-{attempt}-provider-error.txt",
+                        failures,
                     )
+                    if promote("the primary worker returned an invalid response"):
+                        continue
+                    if attempt > config.max_repair_rounds:
+                        raise WorkflowError(failures) from exc
+                    continue
+
                 store.write_json(
                     task.id,
                     f"unit-{index:02d}-attempt-{attempt}-implementation.json",
@@ -311,16 +367,30 @@ class TaskRunner:
                     remaining_edit_units = any(
                         candidate.mode == "edit" for candidate in remaining_units
                     )
-                    if remaining_edit_units:
+                    if remaining_edit_units and result.no_changes_needed:
                         carried_context.append(
-                            f"{unit.title}: worker returned no edits. {result.summary}"
+                            f"{unit.title}: worker found no change was needed. {result.summary}"
                         )
                         self.progress.emit(
-                            f"[{task.id}] NO-CHANGE — unit {index}/{total_units} "
-                            "returned no edits; continuing to later edit units"
+                            f"[{task.id}] NO-CHANGE — unit {index}/{total_units} was "
+                            "explicitly satisfied; continuing to later edit units"
                         )
                         completed = True
                         break
+
+                    if remaining_edit_units:
+                        failures = (
+                            "This edit work unit returned no file edits and did not explicitly "
+                            "set no_changes_needed=true. Provide concrete edits for the allowlisted "
+                            "paths or request escalation with a precise reason."
+                        )
+                        if promote("the primary worker returned no concrete edit"):
+                            continue
+                        if attempt > config.max_repair_rounds:
+                            raise WorkflowError(
+                                f"Worker returned no edits for work unit {unit.title!r}"
+                            )
+                        continue
 
                     self._save_task(
                         store,
@@ -346,6 +416,8 @@ class TaskRunner:
                         "Provide concrete edits for the allowlisted paths or request escalation.\n\n"
                         + test_text
                     )
+                    if promote("the primary worker returned no edits while tests still fail"):
+                        continue
                     if attempt > config.max_repair_rounds:
                         raise WorkflowError(
                             f"Worker returned no edits for failing work unit {unit.title!r}"
@@ -366,6 +438,8 @@ class TaskRunner:
                         f"unit-{index:02d}-attempt-{attempt}-error.txt",
                         failures,
                     )
+                    if promote("the primary worker produced an edit that could not be applied"):
+                        continue
                     if attempt > config.max_repair_rounds:
                         raise WorkflowError(failures) from exc
                     continue
@@ -405,6 +479,8 @@ class TaskRunner:
                     break
 
                 failures = test_text
+                if promote("the primary worker edit did not satisfy validation"):
+                    continue
                 if attempt > config.max_repair_rounds:
                     raise WorkflowError(f"Quick tests failed for work unit {unit.title!r}")
 
@@ -583,34 +659,71 @@ This change was generated and reviewed locally. Include it in the independent re
 
         try:
             integration_path = git.ensure_integration_worktree(config)
-            triage = self._triage(
-                task=task,
-                store=store,
-                root=integration_path,
-                config=config,
-            )
+            baseline: TestRunResult | None = None
+            baseline_text = ""
+
+            # Bug planning is substantially more reliable when the planner sees
+            # the actual failing test output rather than planning from prose alone.
+            # Create the isolated task workspace first so the same checkout is
+            # used for baseline validation and implementation.
+            if task.kind == TaskKind.BUG:
+                workspace = git.create_task_workspace(config, task.id)
+                task.task_branch = workspace.branch
+                task.task_worktree = str(workspace.path)
+                task.integration_branch = workspace.integration_branch
+                store.save(task)
+
+                self._save_task(
+                    store,
+                    task,
+                    TaskStatus.TESTING,
+                    "Running baseline quick validation before bug triage",
+                )
+                with self.progress.operation(task.id, "Baseline quick validation"):
+                    baseline = run_tests(workspace.path, config.tests, "quick")
+                baseline_text = render_tests(baseline)
+                store.write_text(task.id, "tests-baseline.txt", baseline_text)
+
+                triage = self._triage(
+                    task=task,
+                    store=store,
+                    root=workspace.path,
+                    config=config,
+                    baseline_tests=baseline_text,
+                )
+            else:
+                triage = self._triage(
+                    task=task,
+                    store=store,
+                    root=integration_path,
+                    config=config,
+                )
+
             if triage.should_escalate or triage.risk == RiskLevel.EXTERNAL:
                 reason = "; ".join(triage.escalation_reasons) or (
                     "Planner classified the task as requiring external review"
                 )
                 raise WorkflowError(reason)
 
-            workspace = git.create_task_workspace(config, task.id)
-            task.task_branch = workspace.branch
-            task.task_worktree = str(workspace.path)
-            task.integration_branch = workspace.integration_branch
-            store.save(task)
+            if workspace is None:
+                workspace = git.create_task_workspace(config, task.id)
+                task.task_branch = workspace.branch
+                task.task_worktree = str(workspace.path)
+                task.integration_branch = workspace.integration_branch
+                store.save(task)
 
-            self._save_task(
-                store,
-                task,
-                TaskStatus.TESTING,
-                "Running baseline quick validation",
-            )
-            with self.progress.operation(task.id, "Baseline quick validation"):
-                baseline = run_tests(workspace.path, config.tests, "quick")
-            baseline_text = render_tests(baseline)
-            store.write_text(task.id, "tests-baseline.txt", baseline_text)
+            if baseline is None:
+                self._save_task(
+                    store,
+                    task,
+                    TaskStatus.TESTING,
+                    "Running baseline quick validation",
+                )
+                with self.progress.operation(task.id, "Baseline quick validation"):
+                    baseline = run_tests(workspace.path, config.tests, "quick")
+                baseline_text = render_tests(baseline)
+                store.write_text(task.id, "tests-baseline.txt", baseline_text)
+
             if task.kind != TaskKind.BUG and not baseline.passed:
                 raise WorkflowError(
                     "The configured baseline tests already fail before this non-bug task. "

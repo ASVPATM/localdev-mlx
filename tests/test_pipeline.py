@@ -52,9 +52,9 @@ class MultiUnitBugProvider(StructuredProvider):
                 ],
                 work_units=[
                     WorkUnit(
+                        mode="analysis",
                         title="Reproduce failures and confirm contracts",
                         goal="Inspect the current behavior before editing.",
-                        allowed_paths=["tests/test_core.py"],
                         read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
                     ),
                     WorkUnit(
@@ -178,7 +178,7 @@ def test_bug_pipeline_accepts_no_edit_unit_and_cumulative_repairs(
     assert task.status == TaskStatus.INTEGRATED, task.model_dump_json(indent=2)
     core = (sample_repo / "src/samplecalc/core.py").read_text(encoding="utf-8")
     assert "return a - b" in core
-    assert any("NO-CHANGE" in message for message in messages)
+    assert any("ANALYZED" in message for message in messages)
     assert any("DEFERRED" in message for message in messages)
     assert any("Final quick validation" in message for message in messages)
 
@@ -210,3 +210,169 @@ def test_maintenance_depth_scales_all_role_budgets(global_config) -> None:
     assert deep._planner_profile() == global_config.planner
     assert deep._worker_profile() == global_config.worker
     assert deep._reviewer_profile() == global_config.reviewer
+
+
+class BaselineAwareProvider(StructuredProvider):
+    """Verify that bug triage receives real controller test output."""
+
+    def complete_structured(
+        self,
+        *,
+        profile: ModelProfile,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+        schema_name: str,
+    ) -> T:
+        if response_model is TriageResult:
+            assert "Actual baseline validation produced by the controller" in user_prompt
+            assert "test_subtract" in user_prompt
+            value = TriageResult(
+                task_summary="Use the observed failing test to repair subtraction.",
+                risk=RiskLevel.LOW,
+                confidence=0.99,
+                should_escalate=False,
+                reproduction_plan=["Use the supplied baseline failure."],
+                relevant_paths=["src/samplecalc/core.py", "tests/test_core.py"],
+                work_units=[
+                    WorkUnit(
+                        title="Correct subtraction",
+                        goal="Return a minus b.",
+                        allowed_paths=["src/samplecalc/core.py"],
+                        read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
+                        acceptance_criteria=["The supplied subtraction test passes."],
+                    )
+                ],
+            )
+        elif response_model is ImplementationResult:
+            value = ImplementationResult(
+                summary="Correct subtraction.",
+                edits=[
+                    FileEdit(
+                        operation="replace_text",
+                        path="src/samplecalc/core.py",
+                        old_text="return a + b  # intentional demo bug",
+                        new_text="return a - b",
+                        reason="Match subtraction semantics.",
+                    )
+                ],
+            )
+        elif response_model is ReviewResult:
+            value = ReviewResult(
+                approved=True,
+                confidence=0.99,
+                summary="The failing behavior was repaired and validated.",
+            )
+        else:  # pragma: no cover
+            raise AssertionError(response_model)
+        return response_model.model_validate(value.model_dump())
+
+
+class WorkerPromotionProvider(StructuredProvider):
+    """Return no edits from the small worker and a repair from the planner."""
+
+    def __init__(self) -> None:
+        self.implementation_models: list[str] = []
+
+    def complete_structured(
+        self,
+        *,
+        profile: ModelProfile,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+        schema_name: str,
+    ) -> T:
+        if response_model is TriageResult:
+            value = TriageResult(
+                task_summary="Repair subtraction with local worker promotion.",
+                risk=RiskLevel.LOW,
+                confidence=0.99,
+                should_escalate=False,
+                relevant_paths=["src/samplecalc/core.py", "tests/test_core.py"],
+                work_units=[
+                    WorkUnit(
+                        title="Correct subtraction",
+                        goal="Return a minus b.",
+                        allowed_paths=["src/samplecalc/core.py"],
+                        read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
+                        acceptance_criteria=["The subtraction test passes."],
+                    )
+                ],
+            )
+        elif response_model is ImplementationResult:
+            self.implementation_models.append(profile.model)
+            if profile.model == "mock/worker":
+                value = ImplementationResult(
+                    summary="I could not identify a concrete edit.",
+                )
+            elif profile.model == "mock/planner":
+                value = ImplementationResult(
+                    summary="Correct subtraction after local promotion.",
+                    edits=[
+                        FileEdit(
+                            operation="replace_text",
+                            path="src/samplecalc/core.py",
+                            old_text="return a + b  # intentional demo bug",
+                            new_text="return a - b",
+                            reason="Match subtraction semantics.",
+                        )
+                    ],
+                )
+            else:  # pragma: no cover
+                raise AssertionError(profile.model)
+        elif response_model is ReviewResult:
+            value = ReviewResult(
+                approved=True,
+                confidence=0.99,
+                summary="The promoted local repair is correct.",
+            )
+        else:  # pragma: no cover
+            raise AssertionError(response_model)
+        return response_model.model_validate(value.model_dump())
+
+
+def test_bug_triage_receives_actual_baseline_failures(
+    sample_repo: Path,
+    global_config,
+) -> None:
+    runner = TaskRunner(
+        global_config=global_config,
+        provider=BaselineAwareProvider(),
+        manage_models=False,
+        depth="fast",
+    )
+
+    task = runner.run(
+        repository=sample_repo,
+        kind=TaskKind.BUG,
+        description="Repair the failing subtraction behavior.",
+    )
+
+    assert task.status == TaskStatus.INTEGRATED, task.model_dump_json(indent=2)
+    assert any("before bug triage" in event for event in task.events)
+
+
+def test_worker_no_edit_promotes_to_alternate_local_model(
+    sample_repo: Path,
+    global_config,
+) -> None:
+    provider = WorkerPromotionProvider()
+    messages: list[str] = []
+    runner = TaskRunner(
+        global_config=global_config,
+        provider=provider,
+        manage_models=False,
+        progress=ProgressReporter(callback=messages.append, heartbeat_seconds=0),
+        depth="fast",
+    )
+
+    task = runner.run(
+        repository=sample_repo,
+        kind=TaskKind.BUG,
+        description="Repair subtraction even if the primary worker stalls.",
+    )
+
+    assert task.status == TaskStatus.INTEGRATED, task.model_dump_json(indent=2)
+    assert provider.implementation_models == ["mock/worker", "mock/planner"]
+    assert any("PROMOTING" in message for message in messages)

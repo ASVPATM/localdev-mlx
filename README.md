@@ -162,7 +162,7 @@ localdev-mlx tweak "Describe the small adjustment" --repo .
 
 Choose inference depth with `--depth fast`, `balanced`, or `deep`. Every depth still attempts real edits, runs tests, requests reviewer-model approval, and either commits the result or creates a review bundle.
 
-Planner inspection steps can be carried forward without forcing fake edits, and bug fixes may be split across cumulative work units before the final validation gate.
+Bug workflows run the configured baseline before planning, so the planner sees the real failures. Planner inspection steps can be carried forward without forcing fake edits, and fixes may be split across cumulative work units before the final validation gate. If a smaller worker stalls or returns an invalid edit response, LocalDev promotes that unit to an alternate configured planner/reviewer model before creating an external-review bundle.
 
 Inspect work:
 

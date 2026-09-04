@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4
+
+- Run bug baseline validation before planner triage and include the actual failures in the planner prompt.
+- Require planner coverage of every explicit defect and distinct baseline failure.
+- Prioritize requested implementation files over stable documentation in worker and reviewer context budgets.
+- Promote a stalled or invalid primary worker response to the alternate configured planner/reviewer model before external escalation.
+- Avoid repeating identical no-edit attempts with the same weaker worker when a local promotion path exists.
+
 ## 0.1.3
 
 - Keep read-only or no-change worker units from aborting a task before later edit units run.
