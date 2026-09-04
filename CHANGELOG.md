@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Adds durable task phases, bounded requests/attempts, cancellation, and inspectable failure artifacts.
+- Requires executable planner authority and operation-specific edit schemas; rejects unverified no-change claims and duplicate retries while preserving current edits for repair.
+- Adds required-file context manifests, safe path/hash checks, fresh-worktree preparation, and clearer validation failure categories.
+- Hardens managed-process ownership, model-switch locking, worktree cleanup, and fast-forward integration.
+- Separates local outcomes from frontier resolution, preserves legacy records, and supports partial batch resolution without rewriting history.
+- Adds plan-only, explicit budgets, diagnostics, safe cleanup, real capability probes, and clean-source/installed-wheel release gates. Maintenance tasks no longer write tracked per-task handoffs.
+
 ## 0.2.1
 
 - Rejects non-escalating planner responses that omit all work units.

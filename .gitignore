@@ -8,4 +8,4 @@ dist/
 build/
 *.egg-info/
 # Local stabilization input, preserved outside release artifacts.
-LOCALDEV_MLX_CODEX_STABILIZATION_MASTER.md
+/LOCALDEV_MLX_*_MASTER.md
