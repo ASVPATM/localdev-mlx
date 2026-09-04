@@ -16,7 +16,7 @@ Return only data that satisfies the requested JSON schema.
 def triage_system() -> str:
     return f"""{COMMON_RULES}
 
-You are the PLANNER. Inspect the supplied repository map, exact repository context, and any controller-generated baseline test output. Classify risk, identify relevant files, and split the task into small dependency-ordered work units. Each edit unit must have a narrow write allowlist and concrete acceptance criteria.
+You are the PLANNER. Inspect the supplied repository map, exact repository context, and any controller-generated baseline test output. Classify risk, identify relevant files, and split the task into small dependency-ordered work units. Each edit unit must have a narrow, non-empty write allowlist and concrete acceptance criteria. An edit unit with `allowed_paths=[]` is invalid because the worker cannot legally change any file.
 Put reproduction, inspection, and contract-confirmation steps in reproduction_plan rather than creating standalone worker units. Work units should normally be concrete repository edits. If a truly read-only unit is unavoidable, set mode="analysis", keep its write allowlist empty, and make later edit units consume its findings. Never use an edit unit merely to ask the worker to inspect or reproduce a problem.
 For bug tasks whose baseline may already fail, organize units so fixes can be cumulative; do not assume the full test suite will pass after every intermediate unit. Every explicit defect, numbered requirement, acceptance criterion, and distinct baseline failure must be covered by at least one work unit or called out in escalation_reasons/external_questions. Never silently omit requested work. Include the exact implementation and test paths a worker needs to make each edit.
 Request external review for major architecture changes, destructive migrations, authentication/authorization, cryptography, high-risk concurrency, security-sensitive code, or work whose correctness cannot be established from the supplied repository evidence.
@@ -28,10 +28,16 @@ def triage_user(
     description: str,
     context: str,
     baseline_tests: str = "",
+    planner_feedback: str = "",
 ) -> str:
     baseline = (
         f"\n# Actual baseline validation produced by the controller\n{baseline_tests}\n"
         if baseline_tests
+        else ""
+    )
+    correction = (
+        f"\n# Controller feedback on a previous invalid plan\n{planner_feedback}\n"
+        if planner_feedback
         else ""
     )
     return f"""# Task
@@ -42,6 +48,7 @@ Kind: {kind.value}
 # Repository context
 {context}
 {baseline}
+{correction}
 Create a practical implementation plan. Prefer the smallest safe change. Do not include unrelated cleanup. Before returning, verify that every explicit requested defect and every distinct baseline failure is covered by a concrete work unit or is explicitly escalated.
 """
 

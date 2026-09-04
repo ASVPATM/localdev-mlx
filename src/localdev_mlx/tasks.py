@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from localdev_mlx.config import project_state_dir
-from localdev_mlx.schemas import TaskKind, TaskRecord
+from localdev_mlx.schemas import ExternalReviewState, TaskKind, TaskRecord
 
 
 class TaskStore:
@@ -69,6 +69,57 @@ class TaskStore:
             except (OSError, ValueError):
                 continue
         return tasks
+
+
+    def open_external(self) -> list[TaskRecord]:
+        """Return unresolved tasks that need a human or stronger model."""
+        return [
+            task
+            for task in self.list()
+            if task.external_review_state
+            in {ExternalReviewState.PENDING, ExternalReviewState.BUNDLED}
+        ]
+
+    def mark_bundled(self, task_ids: list[str], batch_id: str) -> list[TaskRecord]:
+        updated: list[TaskRecord] = []
+        for task_id in task_ids:
+            task = self.load(task_id)
+            if batch_id not in task.frontier_batch_ids:
+                task.frontier_batch_ids.append(batch_id)
+            task.external_review_state = ExternalReviewState.BUNDLED
+            self.save(task)
+            updated.append(task)
+        return updated
+
+    def mark_resolved(
+        self,
+        task_ids: list[str],
+        *,
+        commit: str,
+        note: str | None = None,
+    ) -> list[TaskRecord]:
+        updated: list[TaskRecord] = []
+        for task_id in task_ids:
+            task = self.load(task_id)
+            task.mark_resolved(commit=commit, note=note)
+            self.save(task)
+            updated.append(task)
+        return updated
+
+    def mark_superseded(
+        self,
+        task_ids: list[str],
+        *,
+        commit: str | None = None,
+        note: str | None = None,
+    ) -> list[TaskRecord]:
+        updated: list[TaskRecord] = []
+        for task_id in task_ids:
+            task = self.load(task_id)
+            task.mark_superseded(commit=commit, note=note)
+            self.save(task)
+            updated.append(task)
+        return updated
 
     def write_json(self, task_id: str, name: str, value: object) -> Path:
         target = self.path(task_id) / name

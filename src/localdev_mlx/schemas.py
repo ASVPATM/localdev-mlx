@@ -28,6 +28,7 @@ class TaskKind(StrEnum):
 class TaskStatus(StrEnum):
     CREATED = "created"
     TRIAGING = "triaging"
+    DEFERRED = "deferred"
     ESCALATED = "escalated"
     IMPLEMENTING = "implementing"
     TESTING = "testing"
@@ -43,6 +44,38 @@ class RiskLevel(StrEnum):
     MEDIUM = "medium"
     HIGH = "high"
     EXTERNAL = "external"
+
+
+class ExternalReviewState(StrEnum):
+    NONE = "none"
+    PENDING = "pending"
+    BUNDLED = "bundled"
+    RESOLVED = "resolved"
+    SUPERSEDED = "superseded"
+
+
+class ExternalReviewCategory(StrEnum):
+    USER_DEFERRED = "user_deferred"
+    PLANNER_RISK = "planner_risk"
+    PLANNER_INVALID = "planner_invalid"
+    WORKER_LIMIT = "worker_limit"
+    VALIDATION_FAILURE = "validation_failure"
+    REVIEW_REJECTED = "review_rejected"
+    QUEUE_EXTERNAL = "queue_external"
+    WORKFLOW_ERROR = "workflow_error"
+
+
+class DeferredIssue(StrictModel):
+    """One intentionally deferred issue loaded from a JSON backlog file."""
+
+    kind: Literal["bug", "feature", "tweak", "audit"]
+    description: str = Field(min_length=1, max_length=10000)
+    reason: str | None = Field(default=None, max_length=3000)
+
+
+class FrontierBatchStatus(StrEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
 
 
 class WorkUnit(StrictModel):
@@ -253,13 +286,32 @@ class TaskRecord(StrictModel):
     worker: str = "local"
     triage: TriageResult | None = None
     attempts: int = 0
+    base_commit: str | None = None
     task_branch: str | None = None
     task_worktree: str | None = None
     integration_branch: str | None = None
     final_commit: str | None = None
     escalation_path: str | None = None
+    visible_review_path: str | None = None
+    external_review_state: ExternalReviewState = ExternalReviewState.NONE
+    external_review_category: ExternalReviewCategory | None = None
+    external_review_reason: str | None = None
+    frontier_batch_ids: list[str] = Field(default_factory=list)
+    resolved_at: datetime | None = None
+    resolved_commit: str | None = None
+    resolution_note: str | None = None
     events: list[str] = Field(default_factory=list)
     timings_seconds: dict[str, float] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def derive_legacy_external_state(self) -> TaskRecord:
+        # Older task records only stored status=escalated and escalation_path.
+        if (
+            self.status in {TaskStatus.ESCALATED, TaskStatus.DEFERRED}
+            and self.external_review_state == ExternalReviewState.NONE
+        ):
+            self.external_review_state = ExternalReviewState.PENDING
+        return self
 
     def transition(self, status: TaskStatus, message: str | None = None) -> None:
         self.status = status
@@ -267,6 +319,61 @@ class TaskRecord(StrictModel):
         if message:
             timestamp = self.updated_at.isoformat(timespec="seconds")
             self.events.append(f"{timestamp} {status.value}: {message}")
+
+    def mark_external_review(
+        self,
+        *,
+        category: ExternalReviewCategory,
+        reason: str,
+        state: ExternalReviewState = ExternalReviewState.PENDING,
+    ) -> None:
+        self.external_review_state = state
+        self.external_review_category = category
+        self.external_review_reason = reason
+        self.updated_at = utc_now()
+
+    def mark_resolved(self, *, commit: str, note: str | None = None) -> None:
+        self.external_review_state = ExternalReviewState.RESOLVED
+        self.resolved_at = utc_now()
+        self.resolved_commit = commit
+        self.resolution_note = note
+        self.updated_at = self.resolved_at
+
+    def mark_superseded(
+        self,
+        *,
+        commit: str | None = None,
+        note: str | None = None,
+    ) -> None:
+        """Close an external item because later work replaced its attempted path."""
+        self.external_review_state = ExternalReviewState.SUPERSEDED
+        self.resolved_at = utc_now()
+        self.resolved_commit = commit
+        self.resolution_note = note
+        self.updated_at = self.resolved_at
+
+
+class FrontierBatchRecord(StrictModel):
+    id: str
+    repository: str
+    status: FrontierBatchStatus = FrontierBatchStatus.OPEN
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    base_branch: str
+    integration_branch: str
+    integration_commit: str
+    task_ids: list[str] = Field(default_factory=list)
+    include_integrated: bool = True
+    path: str
+    visible_path: str | None = None
+    resolved_at: datetime | None = None
+    resolved_commit: str | None = None
+
+    def mark_resolved(self, commit: str) -> None:
+        self.status = FrontierBatchStatus.RESOLVED
+        self.resolved_at = utc_now()
+        self.resolved_commit = commit
+        self.updated_at = self.resolved_at
 
 
 class ReleaseFinding(StrictModel):

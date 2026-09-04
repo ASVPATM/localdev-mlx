@@ -16,6 +16,7 @@ from localdev_mlx.models import ModelManager
 from localdev_mlx.progress import ProgressReporter, format_duration
 from localdev_mlx.providers.base import ProviderError, StructuredProvider
 from localdev_mlx.schemas import (
+    ExternalReviewCategory,
     ImplementationResult,
     ReviewResult,
     RiskLevel,
@@ -31,6 +32,41 @@ from localdev_mlx.tasks import TaskStore
 
 class WorkflowError(RuntimeError):
     """Raised when a LocalDev workflow cannot proceed safely."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: ExternalReviewCategory = ExternalReviewCategory.WORKFLOW_ERROR,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+
+
+def triage_plan_problems(triage: TriageResult) -> list[str]:
+    """Return structural plan problems before a worker is given any authority."""
+    problems: list[str] = []
+    for index, unit in enumerate(triage.work_units, start=1):
+        if unit.mode == "edit" and not unit.allowed_paths:
+            problems.append(
+                f"work unit {index} ({unit.title!r}) is an edit unit with an empty "
+                "allowed_paths list"
+            )
+        if unit.mode == "analysis" and unit.allowed_paths:
+            problems.append(
+                f"work unit {index} ({unit.title!r}) is analysis-only but authorizes writes"
+            )
+        invalid_dependencies = [
+            dependency
+            for dependency in unit.dependencies
+            if dependency < 1 or dependency >= index
+        ]
+        if invalid_dependencies:
+            problems.append(
+                f"work unit {index} ({unit.title!r}) has invalid dependencies: "
+                + ", ".join(str(value) for value in invalid_dependencies)
+            )
+    return problems
 
 
 def render_tests(result: TestRunResult) -> str:
@@ -156,18 +192,75 @@ class TaskRunner:
         )
         profile = self._planner_profile()
         self._ensure_profile(task.id, "planner", profile)
-        with self.progress.operation(task.id, "Planner triage inference"):
-            triage = self.agents.triage(
-                profile=profile,
-                kind=task.kind,
-                description=task.description,
-                context=context,
-                baseline_tests=baseline_tests,
+        planner_feedback = ""
+        last_problem = ""
+
+        for attempt in range(1, 3):
+            operation = "Planner triage inference" if attempt == 1 else "Planner plan-repair inference"
+            try:
+                with self.progress.operation(task.id, operation):
+                    triage = self.agents.triage(
+                        profile=profile,
+                        kind=task.kind,
+                        description=task.description,
+                        context=context,
+                        baseline_tests=baseline_tests,
+                        planner_feedback=planner_feedback,
+                    )
+            except ProviderError as exc:
+                last_problem = f"Planner response could not be validated: {exc}"
+                store.write_text(
+                    task.id,
+                    f"triage-attempt-{attempt}-error.txt",
+                    last_problem,
+                )
+                if attempt == 1:
+                    planner_feedback = (
+                        last_problem
+                        + "\nReturn a complete corrected plan. Every edit work unit must include "
+                        "at least one repository-relative allowed path."
+                    )
+                    self.progress.emit(
+                        f"[{task.id}] REPLANNING — planner response was invalid; "
+                        "requesting one corrected plan"
+                    )
+                    continue
+                raise WorkflowError(
+                    last_problem,
+                    category=ExternalReviewCategory.PLANNER_INVALID,
+                ) from exc
+
+            problems = triage_plan_problems(triage)
+            if not problems:
+                task.triage = triage
+                store.write_json(task.id, "triage.json", triage)
+                store.save(task)
+                return triage
+
+            last_problem = "Invalid planner work-unit authority:\n- " + "\n- ".join(problems)
+            store.write_json(task.id, f"triage-invalid-{attempt}.json", triage)
+            store.write_text(task.id, f"triage-invalid-{attempt}.txt", last_problem)
+            if attempt == 1:
+                planner_feedback = (
+                    last_problem
+                    + "\nReturn the complete corrected plan, preserving task scope. "
+                    "Edit units need narrow non-empty allowed_paths. Analysis units must not "
+                    "authorize writes. Do not send this defect to the worker."
+                )
+                self.progress.emit(
+                    f"[{task.id}] REPLANNING — malformed work-unit authority detected; "
+                    "requesting one corrected plan"
+                )
+                continue
+            raise WorkflowError(
+                last_problem,
+                category=ExternalReviewCategory.PLANNER_INVALID,
             )
-        task.triage = triage
-        store.write_json(task.id, "triage.json", triage)
-        store.save(task)
-        return triage
+
+        raise WorkflowError(
+            last_problem or "Planner did not return a usable work plan",
+            category=ExternalReviewCategory.PLANNER_INVALID,
+        )
 
     def _worker_context(
         self,
@@ -224,7 +317,10 @@ class TaskRunner:
         result: ImplementationResult,
     ) -> list[str]:
         if result.needs_escalation:
-            raise WorkflowError(result.escalation_reason or "Worker requested escalation")
+            raise WorkflowError(
+                result.escalation_reason or "Worker requested escalation",
+                category=ExternalReviewCategory.WORKER_LIMIT,
+            )
         return apply_edits(
             workspace.path,
             result.edits,
@@ -335,7 +431,8 @@ class TaskRunner:
 
                 if result.needs_escalation:
                     raise WorkflowError(
-                        result.escalation_reason or "Worker requested escalation"
+                        result.escalation_reason or "Worker requested escalation",
+                        category=ExternalReviewCategory.WORKER_LIMIT,
                     )
 
                 if unit.mode == "analysis":
@@ -367,22 +464,30 @@ class TaskRunner:
                     remaining_edit_units = any(
                         candidate.mode == "edit" for candidate in remaining_units
                     )
-                    if remaining_edit_units and result.no_changes_needed:
+                    no_change_is_verifiable = baseline_passed or bool(
+                        latest_tests is not None and latest_tests.passed
+                    )
+                    if (
+                        remaining_edit_units
+                        and result.no_changes_needed
+                        and no_change_is_verifiable
+                    ):
                         carried_context.append(
                             f"{unit.title}: worker found no change was needed. {result.summary}"
                         )
                         self.progress.emit(
                             f"[{task.id}] NO-CHANGE — unit {index}/{total_units} was "
-                            "explicitly satisfied; continuing to later edit units"
+                            "explicitly satisfied against a passing baseline; continuing"
                         )
                         completed = True
                         break
 
                     if remaining_edit_units:
                         failures = (
-                            "This edit work unit returned no file edits and did not explicitly "
-                            "set no_changes_needed=true. Provide concrete edits for the allowlisted "
-                            "paths or request escalation with a precise reason."
+                            "This edit work unit returned no verifiable file edit. A no-change "
+                            "claim cannot satisfy an edit unit while the bug baseline still fails. "
+                            "Provide concrete edits for the allowlisted paths or request escalation "
+                            "with a precise reason."
                         )
                         if promote("the primary worker returned no concrete edit"):
                             continue
@@ -659,6 +764,15 @@ This change was generated and reviewed locally. Include it in the independent re
 
         try:
             integration_path = git.ensure_integration_worktree(config)
+            task.base_commit = git.resolve_ref(integration_path, "HEAD")
+            task.integration_branch = config.integration_branch
+            store.save(task)
+            open_external = store.open_external()
+            if open_external:
+                self.progress.emit(
+                    f"[{task.id}] NOTICE — {len(open_external)} unresolved external-review "
+                    "task(s) remain open; this task starts from the current integration HEAD"
+                )
             baseline: TestRunResult | None = None
             baseline_text = ""
 
@@ -703,7 +817,10 @@ This change was generated and reviewed locally. Include it in the independent re
                 reason = "; ".join(triage.escalation_reasons) or (
                     "Planner classified the task as requiring external review"
                 )
-                raise WorkflowError(reason)
+                raise WorkflowError(
+                    reason,
+                    category=ExternalReviewCategory.PLANNER_RISK,
+                )
 
             if workspace is None:
                 workspace = git.create_task_workspace(config, task.id)
@@ -727,7 +844,8 @@ This change was generated and reviewed locally. Include it in the independent re
             if task.kind != TaskKind.BUG and not baseline.passed:
                 raise WorkflowError(
                     "The configured baseline tests already fail before this non-bug task. "
-                    "Repair or document the baseline first."
+                    "Repair or document the baseline first.",
+                    category=ExternalReviewCategory.VALIDATION_FAILURE,
                 )
 
             tests, _ = self._implement_units(
@@ -782,7 +900,8 @@ This change was generated and reviewed locally. Include it in the independent re
                     if issue.severity in {"high", "critical"}
                 ]
                 raise WorkflowError(
-                    "; ".join(reasons) or "Local review did not approve the implementation"
+                    "; ".join(reasons) or "Local review did not approve the implementation",
+                    category=ExternalReviewCategory.REVIEW_REJECTED,
                 )
 
             self._save_task(
@@ -795,7 +914,10 @@ This change was generated and reviewed locally. Include it in the independent re
                 full_tests = run_tests(workspace.path, config.tests, "full")
             store.write_text(task.id, "tests-full.txt", render_tests(full_tests))
             if not full_tests.passed:
-                raise WorkflowError("Full test profile failed")
+                raise WorkflowError(
+                    "Full test profile failed",
+                    category=ExternalReviewCategory.VALIDATION_FAILURE,
+                )
 
             self._write_handoff(
                 task=task,
@@ -847,17 +969,21 @@ This change was generated and reviewed locally. Include it in the independent re
         except Exception as exc:
             task.events.append(traceback.format_exc(limit=8))
             task.transition(TaskStatus.ESCALATED, str(exc))
+            category = getattr(exc, "category", ExternalReviewCategory.WORKFLOW_ERROR)
+            task.mark_external_review(category=category, reason=str(exc))
             store.save(task)
             from localdev_mlx.escalation.bundle import build_escalation_bundle
 
-            bundle = build_escalation_bundle(
+            bundle, visible = build_escalation_bundle(
                 task=task,
                 store=store,
                 repository=git,
                 workspace=workspace,
                 error=str(exc),
+                category=category,
             )
             task.escalation_path = str(bundle)
+            task.visible_review_path = str(visible)
             elapsed_seconds = time.monotonic() - workflow_started
             task.timings_seconds = self.progress.timings_for(task.id)
             task.timings_seconds["Total workflow"] = round(elapsed_seconds, 3)

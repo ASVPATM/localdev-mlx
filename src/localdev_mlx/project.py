@@ -26,6 +26,8 @@ AGENTS_TEMPLATE = """# AGENTS.md
 - Add or update tests for behavior changes.
 - Run the configured quick tests during implementation and full tests before integration.
 - Request external review for security, destructive migrations, high-risk concurrency, cryptography, and major architecture work.
+- Preserve unresolved external tasks; do not mark them resolved until the fix is committed to `ai/integration`.
+- External reviewers must start from the latest `ai/integration` commit because issue bundles can become stale.
 - Do not merge local-model work directly into `main`; use `ai/integration` until independent review.
 """
 
@@ -58,6 +60,8 @@ Local model work is accumulated on `ai/integration`. The `main` branch remains t
 TASK_QUEUE_TEMPLATE = """# Task Queue
 
 This file is the human-readable queue. LocalDev runtime task state is stored outside Git and can be viewed with `localdev-mlx status`.
+
+Unresolved external work is listed with `localdev-mlx frontier status`. Use `localdev-mlx frontier bundle` to prepare one current batch for a stronger model or human.
 """
 
 CONTEXT_MAP_TEMPLATE = """# Context Map
@@ -71,6 +75,8 @@ CONTEXT_MAP_TEMPLATE = """# Context Map
 - `docs/ai/TASK_QUEUE.md`: planned work
 - `docs/ai/handoffs/`: completed task summaries
 - `docs/ai/reviews/`: portable external-review bundles when explicitly exported
+- `.localdev/runtime/reviews/`: ignored project-visible mirrors of failed/deferred task bundles
+- `.localdev/runtime/frontier/`: ignored project-visible frontier batch bundles
 """
 
 HANDOFF_TEMPLATE = """# TASK-ID — Handoff
@@ -160,6 +166,8 @@ def initialize_project(
             changed.append(path)
     (root / "docs/ai/handoffs").mkdir(parents=True, exist_ok=True)
     (root / "docs/ai/reviews").mkdir(parents=True, exist_ok=True)
+    (root / ".localdev/runtime/reviews").mkdir(parents=True, exist_ok=True)
+    (root / ".localdev/runtime/frontier").mkdir(parents=True, exist_ok=True)
 
     gitignore = root / ".gitignore"
     ignore_lines = [".localdev/runtime/", ".DS_Store"]

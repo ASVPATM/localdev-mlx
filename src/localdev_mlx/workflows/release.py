@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from localdev_mlx.git import GitRepository
 from localdev_mlx.models import ModelManager
 from localdev_mlx.progress import ProgressReporter
 from localdev_mlx.providers.base import StructuredProvider
+from localdev_mlx.tasks import TaskStore
 from localdev_mlx.workflows.task_runner import render_tests
 
 
@@ -40,6 +42,8 @@ class ReleaseWorkflow:
         if not git.is_clean(integration):
             raise RuntimeError("Integration branch must be clean before release review")
 
+        task_store = TaskStore(git.root)
+        open_external = task_store.open_external()
         self.progress.emit("[RELEASE] START — preparing local release review")
         with self.progress.operation("RELEASE", "Full configured validation"):
             tests = run_tests(integration, config.tests, "full")
@@ -73,6 +77,35 @@ class ReleaseWorkflow:
             audit.model_dump_json(indent=2),
             encoding="utf-8",
         )
+        issue_lines = ["# Open external-review tasks", ""]
+        if open_external:
+            for task in open_external:
+                issue_lines.extend(
+                    [
+                        f"## {task.id}",
+                        "",
+                        f"- Kind: `{task.kind.value}`",
+                        f"- Outcome: `{task.status.value}`",
+                        f"- Category: `{task.external_review_category.value if task.external_review_category else 'unknown'}`",
+                        "",
+                        task.description,
+                        "",
+                        task.external_review_reason or "No reason was recorded.",
+                        "",
+                    ]
+                )
+                if task.escalation_path and Path(task.escalation_path).exists():
+                    shutil.copytree(
+                        Path(task.escalation_path),
+                        bundle / "open-issues" / task.id,
+                        dirs_exist_ok=True,
+                    )
+        else:
+            issue_lines.append("No unresolved external-review tasks were recorded.")
+        (bundle / "OPEN_EXTERNAL_TASKS.md").write_text(
+            "\n".join(issue_lines) + "\n",
+            encoding="utf-8",
+        )
 
         prompt = f"""# Independent Release Review
 
@@ -91,12 +124,16 @@ Read:
 - `{bundle / 'LOCAL_RELEASE_REVIEW.json'}`
 - `{bundle / 'FULL_TEST_RESULTS.txt'}`
 - `{bundle / 'BASE_TO_INTEGRATION.patch'}`
+- `{bundle / 'OPEN_EXTERNAL_TASKS.md'}`
+- issue-specific artifacts under `{bundle / 'open-issues'}` when present
+
+Open external-review task count: `{len(open_external)}`
 
 Required external work reported locally:
 
 {json.dumps(audit.required_external_work, indent=2)}
 
-Independently audit and repair the candidate. Verify architecture, correctness, security, data integrity, migrations, concurrency, dependency choices, error handling, performance, tests, documentation, packaging, and release behavior. Do not trust local-model claims without checking code and commands. Merge into the base branch only after the candidate is genuinely ready.
+Independently audit and repair the candidate. Resolve or explicitly disposition every open external-review task, while preserving later integrated work. Verify architecture, correctness, security, data integrity, migrations, concurrency, dependency choices, error handling, performance, tests, documentation, packaging, and release behavior. Do not trust local-model claims without checking code and commands. Merge into the base branch only after the candidate is genuinely ready.
 """
         (bundle / "EXTERNAL_RELEASE_REVIEW.md").write_text(prompt, encoding="utf-8")
         (bundle / "MANIFEST.json").write_text(
@@ -108,6 +145,7 @@ Independently audit and repair the candidate. Verify architecture, correctness, 
                     "candidate_commit": git.resolve_ref(integration, "HEAD"),
                     "generated_at": datetime.now(UTC).isoformat(),
                     "tests_passed": tests.passed,
+                    "open_external_task_ids": [task.id for task in open_external],
                     "local_review": audit.model_dump(),
                 },
                 indent=2,

@@ -1,123 +1,62 @@
 # LocalDev MLX
 
-LocalDev MLX is a lightweight Git workflow for planning, implementing, testing, and reviewing code changes with local models served by `mlx_vlm.server`.
+LocalDev MLX is a lightweight Git workflow for using local MLX models as a planner, code worker, and reviewer.
 
 It is optimized for:
 
-- Apple Silicon and MLX
+- Apple Silicon and `mlx_vlm.server`
 - one canonical Git repository
 - one, two, or three configurable local models
-- bounded bug fixes, features, tweaks, and project scaffolding
-- handing uncertain or high-risk work to a stronger model or human
+- bounded bugs, features, tweaks, and project scaffolding
+- saving difficult work for a stronger model or human without losing context
 
-Models return structured plans and file edits rather than shell commands. LocalDev enforces path allowlists, runs approved test commands, and works in isolated Git worktrees.
+LocalDev uses isolated Git worktrees, path allowlists, configured tests, and an `ai/integration` branch. It never calls a paid or frontier model automatically.
 
-> **Early alpha:** LocalDev is not a security sandbox. Generated code is executed by your configured tests. Use trusted models and repositories, keep projects committed, and independently review changes before release.
-
-## Workflow
-
-LocalDev assigns three roles:
-
-```text
-Planner → Worker → tests → Reviewer → commit or review bundle
-```
-
-A single capable model can fill every role. A common two-model setup uses a stronger model for planning/review and a smaller model for implementation.
-
-## Requirements
-
-- Apple Silicon Mac
-- Python 3.11+
-- Git
-- [`uv`](https://docs.astral.sh/uv/)
-- `mlx-vlm`
-- at least one local model that can return schema-valid structured output
-
-Open WebUI is optional. LocalDev talks directly to the MLX server.
-
-A minimal standalone MLX environment looks like this:
-
-```bash
-uv venv ~/.venvs/localdev-mlx --python 3.12
-source ~/.venvs/localdev-mlx/bin/activate
-uv pip install mlx-vlm
-```
-
-LocalDev stores the absolute `mlx_vlm.server` path, so that environment does not need to remain activated afterward.
+> Early alpha: generated code is still code. Review important changes and use trusted repositories and models.
 
 ## Install
 
+Requirements: Python 3.11+, Git, [`uv`](https://docs.astral.sh/uv/), `mlx-vlm`, and at least one local model that can return schema-valid JSON.
+
 ```bash
-git clone YOUR_REPOSITORY_URL
+git clone https://github.com/ASVPATM/localdev-mlx.git
 cd localdev-mlx
 uv tool install .
-localdev-mlx --version
-```
-
-When the command is not found after installation:
-
-```bash
 uv tool update-shell
 exec zsh
 ```
 
-For editable development:
+## Configure models
 
-```bash
-uv tool install --editable .
-```
-
-## Configure
-
-Find the MLX server executable:
+Find the server executable:
 
 ```bash
 which mlx_vlm.server
 ```
 
-Use one model for all roles:
+One model for every role:
 
 ```bash
 localdev-mlx configure YOUR_MODEL_ID \
   --server /absolute/path/to/mlx_vlm.server
 ```
 
-Use separate models:
+Stronger planner/reviewer plus smaller worker:
 
 ```bash
 localdev-mlx configure PLANNER_MODEL_ID \
   --worker-model WORKER_MODEL_ID \
-  --reviewer-model REVIEWER_MODEL_ID \
+  --reviewer-model PLANNER_MODEL_ID \
   --server /absolute/path/to/mlx_vlm.server
 ```
 
-For a model without thinking mode:
-
-```bash
-localdev-mlx configure YOUR_MODEL_ID \
-  --server /absolute/path/to/mlx_vlm.server \
-  --no-thinking
-```
-
-Extra MLX server flags may be repeated:
-
-```bash
-localdev-mlx configure YOUR_MODEL_ID \
-  --server /absolute/path/to/mlx_vlm.server \
-  --server-arg=--max-kv-size \
-  --server-arg=32768
-```
-
-Verify the setup:
+Verify:
 
 ```bash
 localdev-mlx doctor
 localdev-mlx model probe planner
 localdev-mlx model probe worker
-localdev-mlx model probe reviewer
 ```
-
-`localdev-mlx doctor` shows the generated TOML path. Edit that file for per-role budgets or other advanced options.
 
 ## Initialize a project
 
@@ -132,77 +71,170 @@ localdev-mlx init . \
   --full-test "uv run ruff check ."
 ```
 
-Projects that need test-only environment variables can add repeatable options:
+Local work is committed to `ai/integration`, not directly to `main`.
+
+## Main commands
 
 ```bash
-localdev-mlx init . \
-  --quick-test "python3 -m unittest discover -s tests -v" \
-  --test-env PYTHONPATH=src
-```
-
-LocalDev creates an `ai/integration` branch. Local work is not merged directly into `main`.
-
-## Use
-
-Build from a rough idea:
-
-```bash
+# Understand a new project
 localdev-mlx idea "Describe the product, users, workflow, and constraints" --repo .
 localdev-mlx plan "Create a dependency-ordered implementation plan" --repo . --skip-external-review
 localdev-mlx run-queue --repo . --max-tasks 1
-```
 
-Maintain an existing project:
+# Maintain an existing project
+localdev-mlx bug "Observed behavior and expected behavior" --repo .
+localdev-mlx feature "Feature and acceptance criteria" --repo .
+localdev-mlx tweak "Small adjustment" --repo .
 
-```bash
-localdev-mlx bug "Describe the observed and expected behavior" --repo .
-localdev-mlx feature "Describe the feature and acceptance criteria" --repo .
-localdev-mlx tweak "Describe the small adjustment" --repo .
-```
-
-Choose inference depth with `--depth fast`, `balanced`, or `deep`. Every depth still attempts real edits, runs tests, requests reviewer-model approval, and either commits the result or creates a review bundle.
-
-Bug workflows run the configured baseline before planning, so the planner sees the real failures. Planner inspection steps can be carried forward without forcing fake edits, and fixes may be split across cumulative work units before the final validation gate. If a smaller worker stalls or returns an invalid edit response, LocalDev promotes that unit to an alternate configured planner/reviewer model before creating an external-review bundle.
-
-Inspect work:
-
-```bash
+# Inspect and prepare release review
 localdev-mlx status --repo .
 localdev-mlx show-task TASK-ID --repo .
-localdev-mlx follow TASK-ID --repo .
-```
-
-Unload the active managed model:
-
-```bash
-localdev-mlx model stop
-```
-
-Use `--keep-model-loaded` on a workflow to leave the final model in memory.
-
-## External review
-
-When local work is unsafe or unsuccessful, LocalDev preserves its context, diff, test output, and model responses:
-
-```bash
-localdev-mlx export-review TASK-ID --repo .
-```
-
-Before release:
-
-```bash
 localdev-mlx release-candidate --repo .
 ```
 
-The resulting prompt and artifacts can be reviewed by any stronger model or human. External reviewers remain outside the automated loop.
+Use `--depth fast`, `balanced`, or `deep`. Every depth still attempts real edits, runs tests, requests local review, and either integrates the result or preserves an external-review bundle.
 
-## Verify without a model
+Run this for a concise explanation of the workflow:
+
+```bash
+localdev-mlx guide
+```
+
+## Task outcomes
+
+| Outcome | Meaning |
+|---|---|
+| `integrated` | Locally implemented, tested, reviewed, committed, and fast-forwarded into `ai/integration`. |
+| `approved` | Committed on its isolated task branch because `--no-integrate` was used. |
+| `deferred` | No local model was called. The issue was intentionally placed in the frontier backlog. |
+| `escalated` | Local planning, implementation, validation, or review stopped. No change was integrated. |
+
+Every integrated task creates a tracked handoff under `docs/ai/handoffs/`. All integrated changes are included later in the base-to-integration release diff.
+
+Every deferred or escalated task creates:
+
+- a canonical bundle under the LocalDev application-data directory
+- a visible ignored copy under `.localdev/runtime/reviews/TASK-ID/`
+
+## Defer work immediately
+
+Record an issue without loading any model:
+
+```bash
+localdev-mlx bug "Issue to fix later" --repo . --frontier-only
+```
+
+`--escalate-now` is an alias. The same option works with `feature` and `tweak`.
+
+Or use the frontier command directly:
+
+```bash
+localdev-mlx frontier defer bug "Issue to fix later" --repo .
+```
+
+Record several issues at once from JSON without loading a model:
+
+```json
+[
+  {"kind": "bug", "description": "First issue"},
+  {"kind": "feature", "description": "Second issue", "reason": "Needs API review"}
+]
+```
+
+```bash
+localdev-mlx frontier defer-file issues.json --repo .
+```
+
+You may continue implementing unrelated tasks. Open frontier items do not block direct work. Queue tasks depending on an unresolved item remain blocked; independent queue tasks continue by default.
+
+## Combine issues for one frontier session
+
+```bash
+localdev-mlx frontier status --repo .
+localdev-mlx frontier bundle --repo .
+```
+
+The batch contains:
+
+- every unresolved deferred/escalated issue
+- the latest `ai/integration` commit
+- the current base-to-integration diff
+- an index of integrated local tasks
+- one `FRONTIER_BATCH_PROMPT.md`
+
+Individual issue patches are historical. The external reviewer is instructed to work from the latest integration branch so later successful local work is preserved.
+
+After the external fixes are committed to `ai/integration`:
+
+```bash
+localdev-mlx frontier resolve \
+  --batch FRONTIER-YYYYMMDD-HHMMSS \
+  --commit HEAD \
+  --repo .
+```
+
+LocalDev verifies that the recorded commit is reachable from `ai/integration`. The next local task automatically starts from that current commit and reads the latest repository files and tests. Resolution is explicit because LocalDev cannot safely infer that a commit fixed a specific issue.
+
+If the external reviewer committed on `main` or another branch that cleanly contains all current integration work, fast-forward the integration branch first:
+
+```bash
+localdev-mlx frontier sync --from main --repo .
+```
+
+If a later local or external task made an older escalation obsolete, close the duplicate without claiming that the original attempt succeeded:
+
+```bash
+localdev-mlx frontier supersede \
+  --task OLD-TASK-ID \
+  --commit HEAD \
+  --reason "Replaced by FEAT-..." \
+  --repo .
+```
+
+Use `localdev-mlx frontier status --all --repo .` to see pending, bundled, resolved, and superseded history.
+
+## Continue after an escalation
+
+An escalated task does not modify `main` or block unrelated direct commands:
+
+```bash
+localdev-mlx feature "Another independent feature" --repo .
+```
+
+For a machine-readable task queue:
+
+```bash
+localdev-mlx run-queue --repo . --continue-on-escalation
+```
+
+Dependent tasks stay blocked; independent tasks may continue.
+
+## Model memory
+
+Models unload automatically by default.
+
+```bash
+localdev-mlx model status
+localdev-mlx model stop
+```
+
+Use `--keep-model-loaded` on a workflow to keep the final model resident.
+
+## External reviewers
+
+A frontier model or human remains outside the automation loop. Give it either:
+
+- `.localdev/runtime/reviews/TASK-ID/EXTERNAL_REVIEW_PROMPT.md` for one issue
+- `.localdev/runtime/frontier/BATCH-ID/FRONTIER_BATCH_PROMPT.md` for several issues
+- the bundle from `localdev-mlx release-candidate` for final review
+
+After external work, keep the fixes on `ai/integration`, run the full tests, create a handoff, and record resolution with `localdev-mlx frontier resolve`.
+
+## Validate without a model
 
 ```bash
 ./scripts/validate_without_models.sh
 ```
-
-This runs the test suite and a complete mock edit → test → review → Git integration workflow.
 
 ## License
 

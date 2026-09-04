@@ -41,11 +41,18 @@ class LocalAgents:
         description: str,
         context: str,
         baseline_tests: str = "",
+        planner_feedback: str = "",
     ) -> TriageResult:
         return self.provider.complete_structured(
             profile=profile,
             system_prompt=triage_system(),
-            user_prompt=triage_user(kind, description, context, baseline_tests),
+            user_prompt=triage_user(
+                kind,
+                description,
+                context,
+                baseline_tests,
+                planner_feedback,
+            ),
             response_model=TriageResult,
             schema_name="LocalDevTriage",
         )

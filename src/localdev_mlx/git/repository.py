@@ -195,6 +195,21 @@ class GitRepository:
     def diff_between(self, path: Path, left: str, right: str = "HEAD") -> str:
         return self._run(path, ["diff", "--no-ext-diff", "--binary", f"{left}...{right}"]).stdout
 
+    def is_ancestor(self, path: Path, ancestor: str, descendant: str) -> bool:
+        return (
+            self._run(
+                path,
+                ["merge-base", "--is-ancestor", ancestor, descendant],
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    def fast_forward(self, path: Path, ref: str) -> str:
+        """Fast-forward the checked-out branch to ref without creating a merge commit."""
+        self._run(path, ["merge", "--ff-only", ref])
+        return self.resolve_ref(path, "HEAD")
+
     def configured_identity(self) -> tuple[str | None, str | None]:
         name = self._run(self.root, ["config", "user.name"], check=False).stdout.strip() or None
         email = self._run(self.root, ["config", "user.email"], check=False).stdout.strip() or None

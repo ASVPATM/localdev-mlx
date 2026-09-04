@@ -7,7 +7,15 @@ from pydantic import BaseModel
 
 from localdev_mlx.config import ModelProfile
 from localdev_mlx.providers.base import StructuredProvider
-from localdev_mlx.schemas import RiskLevel, TaskKind, TaskStatus, TriageResult, WorkUnit
+from localdev_mlx.schemas import (
+    ExternalReviewCategory,
+    ExternalReviewState,
+    RiskLevel,
+    TaskKind,
+    TaskStatus,
+    TriageResult,
+    WorkUnit,
+)
 from localdev_mlx.workflows.task_runner import TaskRunner
 
 T = TypeVar("T", bound=BaseModel)
@@ -53,6 +61,9 @@ def test_external_triage_builds_bundle(sample_repo: Path, global_config) -> None
     )
     assert task.status == TaskStatus.ESCALATED
     assert task.escalation_path
+    assert task.visible_review_path
+    assert task.external_review_state == ExternalReviewState.PENDING
+    assert task.external_review_category == ExternalReviewCategory.PLANNER_RISK
     bundle = Path(task.escalation_path)
     assert (bundle / "EXTERNAL_REVIEW_PROMPT.md").exists()
     assert (bundle / "SUMMARY.md").exists()

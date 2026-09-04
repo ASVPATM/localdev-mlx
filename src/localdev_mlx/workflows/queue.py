@@ -7,12 +7,14 @@ from localdev_mlx.git import GitRepository
 from localdev_mlx.progress import ProgressReporter
 from localdev_mlx.providers.base import StructuredProvider
 from localdev_mlx.schemas import (
+    ExternalReviewCategory,
     MachineTaskQueue,
     PlannedTask,
     PlannedTaskStatus,
     TaskKind,
     TaskStatus,
 )
+from localdev_mlx.workflows.frontier import defer_task
 from localdev_mlx.workflows.task_runner import TaskRunner
 
 
@@ -79,6 +81,7 @@ Read `AGENTS.md`, the canonical `docs/ai/` documents, dependency handoffs, and r
         *,
         repository: Path,
         max_tasks: int = 1,
+        continue_on_escalation: bool = True,
     ) -> list[tuple[str, str]]:
         git = GitRepository(repository)
         config = load_project_config(git.root)
@@ -109,13 +112,30 @@ Read `AGENTS.md`, the canonical `docs/ai/` documents, dependency handoffs, and r
                 continue
 
             if planned.external_only or planned.worker_tier == "external":
+                deferred = defer_task(
+                    repository=git.root,
+                    kind=TaskKind(planned.kind),
+                    description=(
+                        f"Planned task {planned.id}: {planned.title}\n\n{planned.description}"
+                    ),
+                    reason="The implementation plan explicitly marked this task as external-only.",
+                    category=ExternalReviewCategory.QUEUE_EXTERNAL,
+                )
                 planned.status = PlannedTaskStatus.ESCALATED
+                planned.localdev_task_id = deferred.id
                 prompt = self._external_prompt(integration, planned)
                 self._save(queue_path, queue)
                 git.commit_all(integration, f"docs: prepare external work packet {planned.id}")
-                results.append((planned.id, f"external review: {prompt}"))
-                self.progress.emit(f"[QUEUE] EXTERNAL — {planned.id}: {prompt}")
-                break
+                results.append(
+                    (planned.id, f"deferred as {deferred.id}; external review: {prompt}")
+                )
+                self.progress.emit(
+                    f"[QUEUE] EXTERNAL — {planned.id} recorded as {deferred.id}: {prompt}"
+                )
+                executed += 1
+                if not continue_on_escalation:
+                    break
+                continue
 
             self.progress.emit(f"[QUEUE] STARTING — {planned.id}: {planned.title}")
             planned.status = PlannedTaskStatus.RUNNING
@@ -154,7 +174,7 @@ Read `AGENTS.md`, the canonical `docs/ai/` documents, dependency handoffs, and r
             results.append((planned.id, outcome))
             executed += 1
             self.progress.emit(f"[QUEUE] RESULT — {planned.id}: {outcome}")
-            if current.status == PlannedTaskStatus.ESCALATED:
+            if current.status == PlannedTaskStatus.ESCALATED and not continue_on_escalation:
                 break
 
         self.progress.emit(f"[QUEUE] COMPLETE — processed {executed} local task(s)")

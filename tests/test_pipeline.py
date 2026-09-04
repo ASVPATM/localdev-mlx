@@ -376,3 +376,88 @@ def test_worker_no_edit_promotes_to_alternate_local_model(
     assert task.status == TaskStatus.INTEGRATED, task.model_dump_json(indent=2)
     assert provider.implementation_models == ["mock/worker", "mock/planner"]
     assert any("PROMOTING" in message for message in messages)
+
+
+class PlannerAllowlistRepairProvider(StructuredProvider):
+    """Return one malformed plan, then a corrected plan and implementation."""
+
+    def __init__(self) -> None:
+        self.triage_calls = 0
+
+    def complete_structured(
+        self,
+        *,
+        profile: ModelProfile,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+        schema_name: str,
+    ) -> T:
+        if response_model is TriageResult:
+            self.triage_calls += 1
+            allowed = [] if self.triage_calls == 1 else ["src/samplecalc/core.py"]
+            value = TriageResult(
+                task_summary="Repair subtraction with a validated write allowlist.",
+                risk=RiskLevel.LOW,
+                confidence=0.95,
+                should_escalate=False,
+                relevant_paths=["src/samplecalc/core.py", "tests/test_core.py"],
+                work_units=[
+                    WorkUnit(
+                        title="Correct subtraction",
+                        goal="Return a minus b.",
+                        allowed_paths=allowed,
+                        read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
+                        acceptance_criteria=["The subtraction test passes."],
+                    )
+                ],
+            )
+        elif response_model is ImplementationResult:
+            value = ImplementationResult(
+                summary="Correct subtraction.",
+                edits=[
+                    FileEdit(
+                        operation="replace_text",
+                        path="src/samplecalc/core.py",
+                        old_text="return a + b  # intentional demo bug",
+                        new_text="return a - b",
+                        reason="Implement subtraction semantics.",
+                    )
+                ],
+            )
+        elif response_model is ReviewResult:
+            value = ReviewResult(
+                approved=True,
+                confidence=0.99,
+                summary="The bounded repair is correct.",
+            )
+        else:  # pragma: no cover
+            raise AssertionError(response_model)
+        return response_model.model_validate(value.model_dump())
+
+
+def test_invalid_empty_write_allowlist_is_replanned_before_worker(
+    sample_repo: Path,
+    global_config,
+) -> None:
+    provider = PlannerAllowlistRepairProvider()
+    messages: list[str] = []
+    runner = TaskRunner(
+        global_config=global_config,
+        provider=provider,
+        manage_models=False,
+        progress=ProgressReporter(callback=messages.append, heartbeat_seconds=0),
+        depth="fast",
+    )
+
+    task = runner.run(
+        repository=sample_repo,
+        kind=TaskKind.BUG,
+        description="Repair subtraction.",
+    )
+
+    assert task.status == TaskStatus.INTEGRATED, task.model_dump_json(indent=2)
+    assert provider.triage_calls == 2
+    assert any("REPLANNING" in message for message in messages)
+    assert task.triage is not None
+    assert task.triage.work_units[0].allowed_paths == ["src/samplecalc/core.py"]
