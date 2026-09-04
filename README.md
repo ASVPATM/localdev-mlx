@@ -24,19 +24,53 @@ The installer builds and installs an exact wheel. For upgrades, update the check
 
 ## Configure models
 
-Use one model for every role, or a smaller worker with a stronger planner/reviewer:
+### Choose compatible models
+
+Use instruction-following chat models that can reason about code. There is no brand or size allowlist, but each model must load in your installed **MLX-VLM**, handle text-only chat, return schema-valid JSON, and fit in your Mac's memory with room for context. An "MLX" label alone does not guarantee compatibility. Supply a Hugging Face model ID or an absolute path to a compatible local model directory.
+
+| Role | What to prioritize | Tested model |
+|---|---|---|
+| Planner | Accurate reasoning, concrete plans, and precise file authority. | [orcarouter/Qwen3.8-27B-Uncensored-MLX](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX) |
+| Worker | Reliable code edits and JSON; a smaller, faster model can work well. | [mlx-community/Qwen3.5-9B-4bit](https://huggingface.co/mlx-community/Qwen3.5-9B-4bit) |
+| Reviewer | Careful review of diffs and test evidence; use your stronger model. | The same 27B model as the planner. |
+
+These are tested starting points, not a universal ranking. Both passed the workflow-schema probes and a sample repair with thinking disabled; see the [measured results](docs/development/STABILIZATION_HANDOFF.md#real-model-validation). One model can fill all roles; omit `--worker-model` and `--reviewer-model` to do that.
+
+### Connect the server and verify
+
+Install [MLX-VLM separately](https://github.com/Blaizzy/mlx-vlm#installation). `--server` is the absolute path to its **executable**, not a URL or model directory. LocalDev starts it for you on `127.0.0.1:8080` by default; you normally should not launch a second server yourself. The local validation environment uses `mlx-vlm 0.6.15`; other versions must support the [chat/JSON-schema server API](https://github.com/Blaizzy/mlx-vlm#structured-outputs).
 
 ```bash
-localdev-mlx configure PLANNER_MODEL_ID \
-  --worker-model WORKER_MODEL_ID \
-  --reviewer-model PLANNER_MODEL_ID \
-  --server /absolute/path/to/mlx_vlm.server
+command -v mlx_vlm.server  # Use this path below; no output means it is not on PATH.
+localdev-mlx configure orcarouter/Qwen3.8-27B-Uncensored-MLX \
+  --worker-model mlx-community/Qwen3.5-9B-4bit \
+  --server /absolute/path/to/mlx_vlm.server --no-thinking
 localdev-mlx doctor
 localdev-mlx model probe planner --capabilities --request-timeout 180
 localdev-mlx model probe worker --capabilities --request-timeout 180
 ```
 
-Omit the worker/reviewer options for a single model. Capability probes test actual triage, edit, and review schemas. They disable thinking and limit output to 1,200 tokens per request.
+`configure` saves role assignments; it does not load a model. The first load may download weights. For gated models, accept the model's terms and follow the [Hugging Face login/download guide](https://huggingface.co/docs/huggingface_hub/guides/cli). Probe each distinct model, including `reviewer` if it differs. Probes disable thinking, cap output at 1,200 tokens, and normally unload afterward; passing them is a compatibility check, not a guarantee of coding quality.
+
+### Load, switch, and unload
+
+```bash
+localdev-mlx model start planner  # Load the planner and leave it available.
+localdev-mlx model status        # Check running/managed state and model identity.
+localdev-mlx model start worker  # Stop the managed planner and load the worker.
+localdev-mlx model stop          # Unload and stop the LocalDev-managed server.
+localdev-mlx model logs          # Inspect startup/loading errors.
+```
+
+Workflows switch models automatically, one managed model at a time, and normally unload at the end. Use `--keep-model-loaded` on a workflow/probe to retain the final model. To stop an active maintenance task, use `cancel TASK-ID` and wait for it to finish before `model stop`.
+
+To change assignments, stop the managed server and rerun `configure ... --force` (replaces the saved configuration), then probe again. **Stopping is not deleting:** downloaded weights and saved profiles remain; there is no model-download, model-delete, or profile-remove command.
+
+### Compatibility limits
+
+- LocalDev sends text only, even to vision-capable models. Embedding, speech, and image-only models cannot fill these coding roles. It does not convert model formats or provide Ollama/GGUF, `mlx_lm.server`, or hosted-API integrations.
+- Leave draft-model/speculative-decoding options off: MLX-VLM currently [does not combine them with structured outputs](https://github.com/Blaizzy/mlx-vlm#structured-outputs).
+- An existing external server is reused only when it advertises exactly the requested model at `/v1/models`. LocalDev never takes ownership of or stops it. If the port is occupied or identity is ambiguous, stop that server yourself or configure a different `--port`. See the [upstream server guide](https://github.com/Blaizzy/mlx-vlm#server-fastapi).
 
 ## Initialize a project
 
