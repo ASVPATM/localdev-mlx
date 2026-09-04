@@ -61,6 +61,7 @@ def main():
         run(["uv", "venv", "--python", sys.executable, temp / "wheel-env"], cwd=root, env=env)
         python = temp / "wheel-env/bin/python"
         cli = temp / "wheel-env/bin/localdev-mlx"
+        env["PATH"] = str(cli.parent) + os.pathsep + env.get("PATH", "")
         run(["uv", "pip", "install", "--python", python, wheel, "pytest>=8,<10"], cwd=root, env=env)
         identity = subprocess.check_output(
             [

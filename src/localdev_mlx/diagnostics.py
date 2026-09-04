@@ -25,8 +25,15 @@ def installation_identity() -> dict:
             check=False,
         )
         commit = result.stdout.strip() if result.returncode == 0 else None
+    invoked = Path(sys.argv[0])
+    executable = (
+        str(invoked.absolute())
+        if invoked.name == "localdev-mlx" and invoked.exists()
+        else shutil.which("localdev-mlx")
+    )
     return {
-        "executable": shutil.which("localdev-mlx"),
+        "executable": executable,
+        "path_executable": shutil.which("localdev-mlx"),
         "interpreter": sys.executable,
         "distribution_version": distribution,
         "module_version": localdev_mlx.__version__,
