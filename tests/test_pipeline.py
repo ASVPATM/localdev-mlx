@@ -461,3 +461,139 @@ def test_invalid_empty_write_allowlist_is_replanned_before_worker(
     assert any("REPLANNING" in message for message in messages)
     assert task.triage is not None
     assert task.triage.work_units[0].allowed_paths == ["src/samplecalc/core.py"]
+
+
+class DirectModeProvider(StructuredProvider):
+    """Implement and review a direct task without accepting planner calls."""
+
+    def __init__(self) -> None:
+        self.response_types: list[type[BaseModel]] = []
+
+    def complete_structured(
+        self,
+        *,
+        profile: ModelProfile,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+        schema_name: str,
+    ) -> T:
+        self.response_types.append(response_model)
+        if response_model is TriageResult:
+            raise AssertionError("Direct mode must not invoke the planner")
+        if response_model is ImplementationResult:
+            value = ImplementationResult(
+                summary="Correct subtraction through direct write authority.",
+                edits=[
+                    FileEdit(
+                        operation="replace_text",
+                        path="src/samplecalc/core.py",
+                        old_text="return a + b  # intentional demo bug",
+                        new_text="return a - b",
+                        reason="Match subtraction semantics.",
+                    )
+                ],
+            )
+        elif response_model is ReviewResult:
+            value = ReviewResult(
+                approved=True,
+                confidence=0.99,
+                summary="The direct repair is bounded and validated.",
+            )
+        else:  # pragma: no cover
+            raise AssertionError(response_model)
+        return response_model.model_validate(value.model_dump())
+
+
+def test_direct_bug_pipeline_skips_planner_and_integrates(
+    sample_repo: Path,
+    global_config,
+) -> None:
+    provider = DirectModeProvider()
+    messages: list[str] = []
+    runner = TaskRunner(
+        global_config=global_config,
+        provider=provider,
+        manage_models=False,
+        progress=ProgressReporter(callback=messages.append, heartbeat_seconds=0),
+        depth="fast",
+    )
+
+    task = runner.run(
+        repository=sample_repo,
+        kind=TaskKind.BUG,
+        description="Correct subtraction without planner inference.",
+        direct_allowed_paths=["src/samplecalc/core.py"],
+        direct_read_paths=["tests/test_core.py"],
+    )
+
+    assert task.status == TaskStatus.INTEGRATED, task.model_dump_json(indent=2)
+    assert TriageResult not in provider.response_types
+    assert any("DIRECT" in message for message in messages)
+    assert "return a - b" in (sample_repo / "src/samplecalc/core.py").read_text()
+
+
+class AnalysisOnlyBugPlanProvider(StructuredProvider):
+    """Return a structurally populated but non-executable bug plan."""
+
+    def __init__(self) -> None:
+        self.triage_calls = 0
+        self.worker_called = False
+
+    def complete_structured(
+        self,
+        *,
+        profile: ModelProfile,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[T],
+        schema_name: str,
+    ) -> T:
+        if response_model is TriageResult:
+            self.triage_calls += 1
+            value = TriageResult(
+                task_summary="Inspect subtraction without authorizing a repair.",
+                risk=RiskLevel.LOW,
+                confidence=0.9,
+                should_escalate=False,
+                relevant_paths=["src/samplecalc/core.py", "tests/test_core.py"],
+                work_units=[
+                    WorkUnit(
+                        mode="analysis",
+                        title="Inspect subtraction",
+                        goal="Describe the current failure.",
+                        read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
+                    )
+                ],
+            )
+        elif response_model is ImplementationResult:
+            self.worker_called = True
+            raise AssertionError("Invalid analysis-only bug plan must not reach a worker")
+        else:  # pragma: no cover
+            raise AssertionError(response_model)
+        return response_model.model_validate(value.model_dump())
+
+
+def test_analysis_only_bug_plan_is_rejected_before_worker(
+    sample_repo: Path,
+    global_config,
+) -> None:
+    provider = AnalysisOnlyBugPlanProvider()
+    runner = TaskRunner(
+        global_config=global_config,
+        provider=provider,
+        manage_models=False,
+        depth="fast",
+    )
+
+    task = runner.run(
+        repository=sample_repo,
+        kind=TaskKind.BUG,
+        description="Repair subtraction, not just inspect it.",
+    )
+
+    assert task.status == TaskStatus.ESCALATED
+    assert provider.triage_calls == 2
+    assert provider.worker_called is False
+    assert task.external_review_category is not None
+    assert task.external_review_category.value == "planner_invalid"

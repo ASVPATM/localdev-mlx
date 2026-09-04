@@ -86,6 +86,12 @@ localdev-mlx bug "Observed behavior and expected behavior" --repo .
 localdev-mlx feature "Feature and acceptance criteria" --repo .
 localdev-mlx tweak "Small adjustment" --repo .
 
+# Skip planning when the exact files are already known
+localdev-mlx bug "Fix the known parser defect" --repo . --direct \
+  --allow src/package/parser.py \
+  --allow tests/test_parser.py \
+  --read src/package/contracts.py
+
 # Inspect and prepare release review
 localdev-mlx status --repo .
 localdev-mlx show-task TASK-ID --repo .
@@ -93,6 +99,8 @@ localdev-mlx release-candidate --repo .
 ```
 
 Use `--depth fast`, `balanced`, or `deep`. Every depth still attempts real edits, runs tests, requests local review, and either integrates the result or preserves an external-review bundle.
+
+Use `--direct` with one or more `--allow` paths when the defect and writable files are already known. Direct mode skips planner inference but retains the worker, alternate local-model fallback, test gates, reviewer approval, and Git integration safeguards. Add `--read` paths for extra context that must remain read-only.
 
 Run this for a concise explanation of the workflow:
 

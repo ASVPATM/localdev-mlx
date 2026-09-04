@@ -182,10 +182,21 @@ def _run_maintenance(
     progress_interval: float,
     keep_model_loaded: bool,
     frontier_only: bool = False,
+    direct: bool = False,
+    allow_paths: list[str] | None = None,
+    read_paths: list[str] | None = None,
     mock: bool = False,
 ) -> None:
     config: GlobalConfig | None = None
     try:
+        if frontier_only and (direct or allow_paths or read_paths):
+            raise ValueError(
+                "--frontier-only cannot be combined with --direct, --allow, or --read"
+            )
+        if direct and not allow_paths:
+            raise ValueError("--direct requires at least one --allow PATH")
+        if not direct and (allow_paths or read_paths):
+            raise ValueError("--allow and --read require --direct")
         if frontier_only:
             task = defer_task(
                 repository=repo,
@@ -208,6 +219,8 @@ def _run_maintenance(
             kind=kind,
             description=description,
             auto_integrate=not no_integrate,
+            direct_allowed_paths=list(allow_paths or []) if direct else None,
+            direct_read_paths=list(read_paths or []) if direct else None,
         )
         _print_task_result(task)
     except Exception as exc:
@@ -243,6 +256,8 @@ def guide() -> None:
             "escalation.\n\n"
             "bug / feature / tweak\n"
             "  Planner → Worker → tests → Reviewer → commit to ai/integration\n\n"
+            "--direct with repeated --allow PATH\n"
+            "  Skip planner inference for a known bounded change; Worker → tests → Reviewer.\n\n"
             "--frontier-only (alias --escalate-now)\n"
             "  Record the issue without loading a model; no code is changed.\n\n"
             "integrated\n"
@@ -616,6 +631,27 @@ def bug(
             help="Record this issue for later frontier review without invoking local models.",
         ),
     ] = False,
+    direct: Annotated[
+        bool,
+        typer.Option(
+            "--direct",
+            help="Skip planner inference and use one work unit authorized by --allow paths.",
+        ),
+    ] = False,
+    allow_paths: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allow",
+            help="Repository-relative path the direct worker may edit; repeat as needed.",
+        ),
+    ] = None,
+    read_paths: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--read",
+            help="Additional repository-relative path supplied as direct worker context.",
+        ),
+    ] = None,
     keep_model_loaded: Annotated[bool, typer.Option("--keep-model-loaded")] = False,
     progress_interval: Annotated[float, typer.Option("--progress-interval", min=5)] = 30,
 ) -> None:
@@ -629,6 +665,9 @@ def bug(
         progress_interval=progress_interval,
         keep_model_loaded=keep_model_loaded,
         frontier_only=frontier_only,
+        direct=direct,
+        allow_paths=allow_paths,
+        read_paths=read_paths,
     )
 
 
@@ -646,6 +685,27 @@ def feature(
             help="Record this issue for later frontier review without invoking local models.",
         ),
     ] = False,
+    direct: Annotated[
+        bool,
+        typer.Option(
+            "--direct",
+            help="Skip planner inference and use one work unit authorized by --allow paths.",
+        ),
+    ] = False,
+    allow_paths: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allow",
+            help="Repository-relative path the direct worker may edit; repeat as needed.",
+        ),
+    ] = None,
+    read_paths: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--read",
+            help="Additional repository-relative path supplied as direct worker context.",
+        ),
+    ] = None,
     keep_model_loaded: Annotated[bool, typer.Option("--keep-model-loaded")] = False,
     progress_interval: Annotated[float, typer.Option("--progress-interval", min=5)] = 30,
 ) -> None:
@@ -659,6 +719,9 @@ def feature(
         progress_interval=progress_interval,
         keep_model_loaded=keep_model_loaded,
         frontier_only=frontier_only,
+        direct=direct,
+        allow_paths=allow_paths,
+        read_paths=read_paths,
     )
 
 
@@ -676,6 +739,27 @@ def tweak(
             help="Record this issue for later frontier review without invoking local models.",
         ),
     ] = False,
+    direct: Annotated[
+        bool,
+        typer.Option(
+            "--direct",
+            help="Skip planner inference and use one work unit authorized by --allow paths.",
+        ),
+    ] = False,
+    allow_paths: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allow",
+            help="Repository-relative path the direct worker may edit; repeat as needed.",
+        ),
+    ] = None,
+    read_paths: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--read",
+            help="Additional repository-relative path supplied as direct worker context.",
+        ),
+    ] = None,
     keep_model_loaded: Annotated[bool, typer.Option("--keep-model-loaded")] = False,
     progress_interval: Annotated[float, typer.Option("--progress-interval", min=5)] = 30,
 ) -> None:
@@ -689,6 +773,9 @@ def tweak(
         progress_interval=progress_interval,
         keep_model_loaded=keep_model_loaded,
         frontier_only=frontier_only,
+        direct=direct,
+        allow_paths=allow_paths,
+        read_paths=read_paths,
     )
 
 

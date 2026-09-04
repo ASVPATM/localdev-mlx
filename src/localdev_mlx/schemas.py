@@ -111,7 +111,7 @@ class TriageResult(StrictModel):
     assumptions: list[str] = Field(default_factory=list, max_length=30)
     reproduction_plan: list[str] = Field(default_factory=list, max_length=30)
     relevant_paths: list[str] = Field(default_factory=list, max_length=60)
-    work_units: list[WorkUnit] = Field(default_factory=list, min_length=1, max_length=12)
+    work_units: list[WorkUnit] = Field(max_length=12)
     recommended_test_profile: Literal["quick", "full"] = "quick"
     external_questions: list[str] = Field(default_factory=list, max_length=30)
 
@@ -119,6 +119,8 @@ class TriageResult(StrictModel):
     def escalation_consistency(self) -> TriageResult:
         if self.should_escalate and not self.escalation_reasons:
             raise ValueError("Escalated triage must include at least one escalation reason")
+        if not self.should_escalate and not self.work_units:
+            raise ValueError("Non-escalating triage must include at least one work unit")
         return self
 
 

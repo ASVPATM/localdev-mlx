@@ -10,7 +10,7 @@ runner = CliRunner()
 def test_version_option() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.stdout.strip() == "0.2.0"
+    assert result.stdout.strip() == "0.2.1"
 
 
 def test_help_lists_core_workflows() -> None:
@@ -52,3 +52,16 @@ def test_configure_forwards_general_model_options(monkeypatch, tmp_path) -> None
     assert captured["thinking_budget"] == 0
     assert captured["max_tokens"] == 4096
     assert captured["server_args"] == ("--max-kv-size", "32768")
+
+
+def test_bug_help_documents_direct_path_options() -> None:
+    result = runner.invoke(app, ["bug", "--help"])
+    assert result.exit_code == 0
+    assert "--direct" in result.stdout
+    assert "--allow" in result.stdout
+    assert "--read" in result.stdout
+
+
+def test_direct_bug_requires_allow_path() -> None:
+    result = runner.invoke(app, ["bug", "example", "--direct"])
+    assert result.exit_code != 0 or "requires at least one --allow" in result.stdout

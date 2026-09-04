@@ -43,9 +43,23 @@ class WorkflowError(RuntimeError):
         self.category = category
 
 
-def triage_plan_problems(triage: TriageResult) -> list[str]:
+def triage_plan_problems(
+    triage: TriageResult,
+    *,
+    task_kind: TaskKind | None = None,
+) -> list[str]:
     """Return structural plan problems before a worker is given any authority."""
     problems: list[str] = []
+    if not triage.should_escalate and not triage.work_units:
+        problems.append("non-escalating plan contains no work units")
+    if (
+        not triage.should_escalate
+        and task_kind in {TaskKind.BUG, TaskKind.FEATURE, TaskKind.TWEAK}
+        and not any(unit.mode == "edit" for unit in triage.work_units)
+    ):
+        problems.append(
+            f"{task_kind.value} plan contains no edit work unit"
+        )
     for index, unit in enumerate(triage.work_units, start=1):
         if unit.mode == "edit" and not unit.allowed_paths:
             problems.append(
@@ -230,7 +244,7 @@ class TaskRunner:
                     category=ExternalReviewCategory.PLANNER_INVALID,
                 ) from exc
 
-            problems = triage_plan_problems(triage)
+            problems = triage_plan_problems(triage, task_kind=task.kind)
             if not problems:
                 task.triage = triage
                 store.write_json(task.id, "triage.json", triage)
@@ -261,6 +275,58 @@ class TaskRunner:
             last_problem or "Planner did not return a usable work plan",
             category=ExternalReviewCategory.PLANNER_INVALID,
         )
+
+    def _direct_triage(
+        self,
+        *,
+        task: TaskRecord,
+        store: TaskStore,
+        allowed_paths: list[str],
+        read_paths: list[str],
+    ) -> TriageResult:
+        """Build one explicit work unit from user-authorized repository paths."""
+        if not allowed_paths:
+            raise ValueError("Direct mode requires at least one --allow path")
+        requested = list(dict.fromkeys([*read_paths, *allowed_paths]))
+        unit = WorkUnit(
+            title=f"Direct {task.kind.value} implementation",
+            goal=task.description,
+            allowed_paths=allowed_paths,
+            read_paths=requested,
+            acceptance_criteria=[
+                "Implement the requested behavior only within the authorized paths.",
+                "Configured validation passes before integration.",
+            ],
+            test_focus=["Run the configured quick and full validation profiles."],
+        )
+        triage = TriageResult(
+            task_summary=task.description[:3000],
+            risk=RiskLevel.MEDIUM,
+            confidence=1.0,
+            should_escalate=False,
+            assumptions=[
+                "The user explicitly supplied the write authority for this direct task."
+            ],
+            reproduction_plan=[
+                "Use controller-generated baseline validation for current behavior."
+            ],
+            relevant_paths=requested,
+            work_units=[unit],
+        )
+        self._save_task(
+            store,
+            task,
+            TaskStatus.TRIAGING,
+            "Using a user-authorized direct work unit; planner inference skipped",
+        )
+        task.triage = triage
+        store.write_json(task.id, "triage.json", triage)
+        store.save(task)
+        self.progress.emit(
+            f"[{task.id}] DIRECT — planner skipped; authorized {len(allowed_paths)} "
+            "write path(s)"
+        )
+        return triage
 
     def _worker_context(
         self,
@@ -345,6 +411,19 @@ class TaskRunner:
         latest_tests: TestRunResult | None = None
         carried_context: list[str] = []
         total_units = len(triage.work_units)
+        if total_units == 0:
+            raise WorkflowError(
+                "Planner returned no executable work units",
+                category=ExternalReviewCategory.PLANNER_INVALID,
+            )
+        if (
+            task.kind in {TaskKind.BUG, TaskKind.FEATURE, TaskKind.TWEAK}
+            and not any(unit.mode == "edit" for unit in triage.work_units)
+        ):
+            raise WorkflowError(
+                f"{task.kind.value} plan contains no edit work unit",
+                category=ExternalReviewCategory.PLANNER_INVALID,
+            )
 
         for index, unit in enumerate(triage.work_units, start=1):
             verb = "analyzing" if unit.mode == "analysis" else "implementing"
@@ -605,7 +684,8 @@ class TaskRunner:
         if not latest_tests.passed:
             raise WorkflowError(
                 "Quick tests still fail after all planned work units. "
-                "The remaining failures are preserved in tests-after-work-units.txt."
+                "The remaining failures are preserved in tests-after-work-units.txt.",
+                category=ExternalReviewCategory.VALIDATION_FAILURE,
             )
         return latest_tests, implementations
 
@@ -751,6 +831,8 @@ This change was generated and reviewed locally. Include it in the independent re
         kind: TaskKind,
         description: str,
         auto_integrate: bool | None = None,
+        direct_allowed_paths: list[str] | None = None,
+        direct_read_paths: list[str] | None = None,
     ) -> TaskRecord:
         git = GitRepository(repository)
         config = load_project_config(git.root)
@@ -761,6 +843,11 @@ This change was generated and reviewed locally. Include it in the independent re
             f"[{task.id}] CREATED — {kind.value} workflow started (depth={self.depth})"
         )
         workspace: TaskWorkspace | None = None
+        direct_mode = direct_allowed_paths is not None
+        direct_allowed = list(dict.fromkeys(direct_allowed_paths or []))
+        direct_reads = list(dict.fromkeys(direct_read_paths or []))
+        if direct_mode and not direct_allowed:
+            raise ValueError("Direct mode requires at least one allowed path")
 
         try:
             integration_path = git.ensure_integration_worktree(config)
@@ -777,16 +864,17 @@ This change was generated and reviewed locally. Include it in the independent re
             baseline_text = ""
 
             # Bug planning is substantially more reliable when the planner sees
-            # the actual failing test output rather than planning from prose alone.
-            # Create the isolated task workspace first so the same checkout is
-            # used for baseline validation and implementation.
-            if task.kind == TaskKind.BUG:
+            # actual failing test output. Direct mode also creates the task workspace
+            # first because the worker needs current files without planner inference.
+            if task.kind == TaskKind.BUG or direct_mode:
                 workspace = git.create_task_workspace(config, task.id)
                 task.task_branch = workspace.branch
                 task.task_worktree = str(workspace.path)
                 task.integration_branch = workspace.integration_branch
                 store.save(task)
 
+            if task.kind == TaskKind.BUG:
+                assert workspace is not None
                 self._save_task(
                     store,
                     task,
@@ -798,6 +886,15 @@ This change was generated and reviewed locally. Include it in the independent re
                 baseline_text = render_tests(baseline)
                 store.write_text(task.id, "tests-baseline.txt", baseline_text)
 
+            if direct_mode:
+                triage = self._direct_triage(
+                    task=task,
+                    store=store,
+                    allowed_paths=direct_allowed,
+                    read_paths=direct_reads,
+                )
+            elif task.kind == TaskKind.BUG:
+                assert workspace is not None
                 triage = self._triage(
                     task=task,
                     store=store,

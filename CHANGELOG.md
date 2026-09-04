@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- Rejects non-escalating planner responses that omit all work units.
+- Rejects bug, feature, and tweak plans that contain no edit unit.
+- Classifies unchanged failing validation as a validation failure rather than a generic workflow error.
+- Adds `--direct`, `--allow`, and `--read` to bypass planner inference for known bounded changes.
+- Direct mode retains worktree isolation, worker fallback, tests, reviewer approval, and integration checks.
+
 ## 0.2.0
 
 - Distinguishes integrated, deferred, escalated, and externally resolved work.

@@ -59,3 +59,25 @@ def test_escalated_triage_requires_reason() -> None:
             should_escalate=True,
             work_units=[unit],
         )
+
+
+def test_non_escalating_triage_requires_work_units() -> None:
+    with pytest.raises(ValidationError):
+        TriageResult(
+            task_summary="missing work",
+            risk=RiskLevel.LOW,
+            confidence=0.9,
+            should_escalate=False,
+        )
+
+
+def test_escalating_triage_may_use_empty_work_units() -> None:
+    triage = TriageResult(
+        task_summary="needs independent review",
+        risk=RiskLevel.EXTERNAL,
+        confidence=0.7,
+        should_escalate=True,
+        escalation_reasons=["High-risk change"],
+        work_units=[],
+    )
+    assert triage.work_units == []
