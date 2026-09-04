@@ -143,6 +143,40 @@ class WorkUnit(StrictModel):
     dependencies: list[int] = Field(default_factory=list, max_length=20)
     requirement_ids: list[str] = Field(default_factory=list, max_length=60)
 
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        # Expose controller authority requirements to constrained decoding too.
+        # Defaults remain readable through the Python/legacy-record API.
+        schema = handler(core_schema)
+        variants = []
+        for mode in ("edit", "analysis"):
+            fields = dict(schema["properties"])
+            fields["mode"] = {"type": "string", "const": mode}
+            fields["allowed_paths"] = {
+                **fields["allowed_paths"],
+                **({"minItems": 1} if mode == "edit" else {"maxItems": 0}),
+            }
+            for key in ("acceptance_criteria", "test_focus"):
+                fields[key] = {**fields[key], "minItems": 1}
+            variants.append(
+                {
+                    "type": "object",
+                    "properties": fields,
+                    "required": [
+                        "mode",
+                        "title",
+                        "goal",
+                        "allowed_paths",
+                        "read_paths",
+                        "acceptance_criteria",
+                        "test_focus",
+                        "dependencies",
+                    ],
+                    "additionalProperties": False,
+                }
+            )
+        return {"title": "WorkUnit", "anyOf": variants}
+
     @field_validator("allowed_paths", "read_paths")
     @classmethod
     def validate_relative_paths(cls, values: list[str]) -> list[str]:
@@ -185,6 +219,12 @@ class TriageResult(StrictModel):
     recommended_test_profile: Literal["quick", "full"] = "quick"
     external_questions: list[str] = Field(default_factory=list, max_length=30)
     deferred_requirements: dict[str, str] = Field(default_factory=dict)
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        schema = handler(core_schema)
+        schema["required"] = [*schema["required"], "reproduction_plan", "relevant_paths"]
+        return schema
 
     @model_validator(mode="after")
     def escalation_consistency(self) -> TriageResult:

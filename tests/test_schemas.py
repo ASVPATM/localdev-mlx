@@ -18,18 +18,40 @@ def test_replace_text_requires_both_values() -> None:
 
 def test_wire_schema_requires_operation_specific_fields() -> None:
     variants = FileEdit.model_json_schema()["anyOf"]
-    whole_file = next(v for v in variants if v["properties"]["operation"]["const"] == "replace_file")
+    whole_file = next(
+        v for v in variants if v["properties"]["operation"]["const"] == "replace_file"
+    )
     assert "content" in whole_file["required"]
     assert "old_text" not in whole_file["properties"]
     text_edit = next(v for v in variants if v["properties"]["operation"]["const"] == "replace_text")
     assert {"old_text", "new_text"} <= set(text_edit["required"])
 
 
+def test_wire_plan_requires_controller_authority_and_verification() -> None:
+    schema = TriageResult.model_json_schema()
+    assert {"reproduction_plan", "relevant_paths"} <= set(schema["required"])
+    variants = schema["$defs"]["WorkUnit"]["anyOf"]
+    for unit in variants:
+        assert {"allowed_paths", "acceptance_criteria", "test_focus", "dependencies"} <= set(
+            unit["required"]
+        )
+        assert unit["properties"]["acceptance_criteria"]["minItems"] == 1
+        assert unit["properties"]["test_focus"]["minItems"] == 1
+        authority = unit["properties"]["allowed_paths"]
+        if unit["properties"]["mode"]["const"] == "edit":
+            assert authority["minItems"] == 1
+        else:
+            assert authority["maxItems"] == 0
+
+
 def test_bare_summary_is_not_an_implementation() -> None:
     with pytest.raises(ValidationError):
         ImplementationResult(summary="Inspection found no edit to apply")
-    result = ImplementationResult(result_type="no_change", summary="Already correct",
-                                  notes=["The targeted acceptance test covers the existing behavior."])
+    result = ImplementationResult(
+        result_type="no_change",
+        summary="Already correct",
+        notes=["The targeted acceptance test covers the existing behavior."],
+    )
     assert not result.edits
 
 
