@@ -134,7 +134,10 @@ def test_repository_instructions_do_not_grant_authority(sample_repo, global_conf
     assert not (Path(task.task_worktree) / ".env").exists()
 
 
-def test_cli_cancel_marker_and_diagnostics(sample_repo):
+def test_cli_cancel_marker_and_diagnostics(sample_repo, monkeypatch):
+    from rich.console import Console
+
+    monkeypatch.setattr("localdev_mlx.cli.console", Console(force_terminal=True))
     task = TaskStore(sample_repo).create(TaskKind.BUG, "pending", "local")
     runner = CliRunner()
     result = runner.invoke(app, ["cancel", task.id, "--repo", str(sample_repo)])
@@ -143,6 +146,9 @@ def test_cli_cancel_marker_and_diagnostics(sample_repo):
     result = runner.invoke(app, ["diagnostics"])
     assert result.exit_code == 0
     assert json.loads(result.stdout)["versions_agree"]
+    result = runner.invoke(app, ["show-task", task.id, "--repo", str(sample_repo)])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["id"] == task.id
 
 
 def test_cancel_command_interrupts_active_request(sample_repo, global_config):
@@ -213,6 +219,8 @@ def test_state_machine_rejects_implementation_before_preflight(sample_repo):
 
 @pytest.mark.parametrize("command", ["bug", "feature", "tweak"])
 def test_cli_limits_are_discoverable(command):
+    from rich.text import Text
+
     result = CliRunner().invoke(app, [command, "--help"], terminal_width=140)
     assert result.exit_code == 0
     for option in [
@@ -222,4 +230,4 @@ def test_cli_limits_are_discoverable(command):
         "--task-timeout",
         "--plan-only",
     ]:
-        assert option in result.stdout
+        assert option in Text.from_ansi(result.stdout).plain

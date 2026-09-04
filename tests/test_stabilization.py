@@ -168,6 +168,41 @@ def test_dependency_and_coverage_validation():
 
 
 @pytest.mark.parametrize(
+    "missing",
+    ["task_summary", "reproduction_plan", "relevant_paths", "acceptance_criteria", "test_focus"],
+)
+def test_semantic_plan_requires_verifiable_work(missing):
+    command = "python3 -m unittest discover -s tests -v"
+    plan = TriageResult(
+        task_summary="Repair subtraction",
+        risk="low",
+        confidence=1,
+        should_escalate=False,
+        reproduction_plan=["Run the baseline command"],
+        relevant_paths=["calc.py"],
+        work_units=[
+            WorkUnit(
+                title="Repair",
+                goal="Subtract correctly",
+                allowed_paths=["calc.py"],
+                acceptance_criteria=["subtract(7, 2) is 5"],
+                test_focus=[command],
+            )
+        ],
+    )
+    coverage = requirements("", f"Command: {command}\nExit code: 1\n")
+    assert command in coverage
+    assert triage_plan_problems(plan, task_kind=TaskKind.BUG, coverage=coverage) == []
+    if missing in {"acceptance_criteria", "test_focus"}:
+        setattr(plan.work_units[0], missing, [])
+    else:
+        setattr(plan, missing, " " if missing == "task_summary" else [])
+    assert any(
+        missing in p for p in triage_plan_problems(plan, task_kind=TaskKind.BUG, coverage=coverage)
+    )
+
+
+@pytest.mark.parametrize(
     "scenario,expected",
     [
         ("missing", "missing"),

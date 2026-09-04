@@ -5,7 +5,8 @@ import time
 from dataclasses import replace
 
 from localdev_mlx.execution.budget import deadline
-from localdev_mlx.schemas import ImplementationResult, ReviewResult, TriageResult
+from localdev_mlx.schemas import ImplementationResult, ReviewResult, TaskKind, TriageResult
+from localdev_mlx.workflows.planning import triage_plan_problems
 
 
 def probe_capabilities(profile, provider, *, timeout=120):
@@ -25,6 +26,7 @@ def probe_capabilities(profile, provider, *, timeout=120):
             TriageResult,
             "Plan a low-risk bug fix in calc.py: add subtracts instead of adding. "
             'One edit unit with allowed_paths=["calc.py"], read_paths=["calc.py"], acceptance_criteria=["add(2,3)==5"]. '
+            'Include test_focus=["check add(2,3)"], relevant_paths=["calc.py"], reproduction_plan=["check add(2,3)"]. '
             'should_escalate=false; confidence=1; task_summary="Fix addition".',
         ),
         (
@@ -67,10 +69,10 @@ def probe_capabilities(profile, provider, *, timeout=120):
                 or "return a + b" not in (response.edits[0].content or "")
             ):
                 raise ValueError("Schema-valid response did not implement the tiny requested edit")
-            if name == "triage" and (
-                response.should_escalate or not response.work_units[0].allowed_paths
-            ):
-                raise ValueError("Probe did not produce executable authority")
+            if name == "triage":
+                problems = triage_plan_problems(response, task_kind=TaskKind.BUG)
+                if response.should_escalate or problems:
+                    raise ValueError(f"Probe did not produce a valid executable plan: {problems}")
             if name == "review" and not response.approved:
                 raise ValueError("Probe did not approve the specified trivial correct diff")
             record.update(

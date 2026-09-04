@@ -45,7 +45,7 @@ class MockStructuredProvider(StructuredProvider):
                         allowed_paths=["src/samplecalc/core.py", "tests/test_core.py"],
                         read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
                         acceptance_criteria=["subtract(7, 2) returns 5"],
-                        test_focus=["subtraction unit tests"],
+                        test_focus=["python3 -m unittest discover -s tests -v"],
                     )
                 ],
             )

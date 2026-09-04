@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from rich.console import Console
+from rich.text import Text
 from typer.testing import CliRunner
 
 from localdev_mlx import __version__
@@ -8,7 +11,9 @@ from localdev_mlx.cli import app
 runner = CliRunner()
 
 
-def test_version_option() -> None:
+@pytest.mark.parametrize("force_color", [False, True])
+def test_version_option(monkeypatch, force_color) -> None:
+    monkeypatch.setattr("localdev_mlx.cli.console", Console(force_terminal=force_color))
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert result.stdout.strip() == __version__
@@ -58,9 +63,10 @@ def test_configure_forwards_general_model_options(monkeypatch, tmp_path) -> None
 def test_bug_help_documents_direct_path_options() -> None:
     result = runner.invoke(app, ["bug", "--help"])
     assert result.exit_code == 0
-    assert "--direct" in result.stdout
-    assert "--allow" in result.stdout
-    assert "--read" in result.stdout
+    output = Text.from_ansi(result.stdout).plain
+    assert "--direct" in output
+    assert "--allow" in output
+    assert "--read" in output
 
 
 def test_direct_bug_requires_allow_path() -> None:

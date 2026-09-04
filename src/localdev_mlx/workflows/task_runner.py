@@ -242,7 +242,7 @@ class TaskRunner:
                 read_paths=list(dict.fromkeys(direct_reads)),
                 acceptance_criteria=[self.task.description],
                 requirement_ids=list(coverage),
-                test_focus=list(coverage.keys()),
+                test_focus=list(coverage) or [shlex.join(c.command) for c in baseline.commands],
             )
             triage = TriageResult(
                 task_summary=self.task.description[:3000],
@@ -257,7 +257,11 @@ class TaskRunner:
         else:
             self._phase(TaskPhase.PLANNING, "Preparing planner triage", TaskStatus.TRIAGING)
             failing_paths = list(
-                dict.fromkeys(key.split("::")[0] for key in coverage if "::" in key)
+                dict.fromkeys(
+                    key.split("::")[0]
+                    for key in coverage
+                    if "::" in key and not any(c.isspace() for c in key)
+                )
             )
             context = self._context(
                 "triage",

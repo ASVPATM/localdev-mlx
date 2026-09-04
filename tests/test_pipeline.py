@@ -55,17 +55,23 @@ class MultiUnitBugProvider(StructuredProvider):
                         mode="analysis",
                         title="Reproduce failures and confirm contracts",
                         goal="Inspect the current behavior before editing.",
+                        acceptance_criteria=["Identify the subtraction defect."],
+                        test_focus=["python3 -m unittest discover -s tests -v"],
                         read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
                     ),
                     WorkUnit(
                         title="Record the diagnosed bug",
                         goal="Add a narrow diagnostic note before the code repair.",
+                        acceptance_criteria=["Describe subtraction test coverage."],
+                        test_focus=["python3 -m unittest discover -s tests -v"],
                         allowed_paths=["README.md"],
                         read_paths=["README.md"],
                     ),
                     WorkUnit(
                         title="Correct subtraction",
                         goal="Return a minus b without changing addition.",
+                        acceptance_criteria=["Subtraction passes without regressing addition."],
+                        test_focus=["python3 -m unittest discover -s tests -v"],
                         allowed_paths=["src/samplecalc/core.py"],
                         read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
                     ),
@@ -243,6 +249,7 @@ class BaselineAwareProvider(StructuredProvider):
                         allowed_paths=["src/samplecalc/core.py"],
                         read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
                         acceptance_criteria=["The supplied subtraction test passes."],
+                        test_focus=["python3 -m unittest discover -s tests -v"],
                     )
                 ],
             )
@@ -288,6 +295,7 @@ class WorkerPromotionProvider(StructuredProvider):
         if response_model is TriageResult:
             value = TriageResult(
                 task_summary="Repair subtraction with local worker promotion.",
+                reproduction_plan=["Run the supplied baseline command."],
                 risk=RiskLevel.LOW,
                 confidence=0.99,
                 should_escalate=False,
@@ -299,6 +307,7 @@ class WorkerPromotionProvider(StructuredProvider):
                         allowed_paths=["src/samplecalc/core.py"],
                         read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
                         acceptance_criteria=["The subtraction test passes."],
+                        test_focus=["python3 -m unittest discover -s tests -v"],
                     )
                 ],
             )
@@ -400,6 +409,7 @@ class PlannerAllowlistRepairProvider(StructuredProvider):
             allowed = [] if self.triage_calls == 1 else ["src/samplecalc/core.py"]
             value = TriageResult(
                 task_summary="Repair subtraction with a validated write allowlist.",
+                reproduction_plan=["Run the supplied baseline command."],
                 risk=RiskLevel.LOW,
                 confidence=0.95,
                 should_escalate=False,
@@ -411,6 +421,7 @@ class PlannerAllowlistRepairProvider(StructuredProvider):
                         allowed_paths=allowed,
                         read_paths=["src/samplecalc/core.py", "tests/test_core.py"],
                         acceptance_criteria=["The subtraction test passes."],
+                        test_focus=["python3 -m unittest discover -s tests -v"],
                     )
                 ],
             )

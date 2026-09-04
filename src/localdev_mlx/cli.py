@@ -262,7 +262,7 @@ def root_callback(
     ] = False,
 ) -> None:
     if version:
-        console.print(__version__)
+        typer.echo(__version__)
         raise typer.Exit()
 
 
@@ -507,7 +507,7 @@ def doctor(
 @app.command()
 def diagnostics() -> None:
     """Report executable, interpreter, module, distribution, and source identity."""
-    console.print_json(data=installation_identity())
+    typer.echo(json.dumps(installation_identity(), indent=2))
 
 
 @app.command("init")
@@ -572,7 +572,7 @@ def model_status() -> None:
         data = {
             role: manager.status(config.profile(role)) for role in ("planner", "worker", "reviewer")
         }
-        console.print_json(data=data)
+        typer.echo(json.dumps(data, indent=2))
     except Exception as exc:
         _handle_error(exc)
 
@@ -1021,7 +1021,7 @@ def show_task(
     """Show complete stored state for one task."""
     try:
         task = TaskStore(_repository(repo)).load(task_id)
-        console.print_json(task.model_dump_json(indent=2))
+        typer.echo(task.model_dump_json(indent=2))
     except Exception as exc:
         _handle_error(exc)
 

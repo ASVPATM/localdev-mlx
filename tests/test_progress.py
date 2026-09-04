@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import time
+import threading
 
 from localdev_mlx.progress import ProgressReporter, format_duration
 
@@ -13,11 +13,18 @@ def test_format_duration() -> None:
 
 def test_operation_emits_heartbeat_and_records_timing() -> None:
     messages: list[str] = []
-    reporter = ProgressReporter(callback=messages.append, heartbeat_seconds=5)
+    heartbeat_received = threading.Event()
+
+    def record(message: str) -> None:
+        messages.append(message)
+        if "WORKING" in message:
+            heartbeat_received.set()
+
+    reporter = ProgressReporter(callback=record, heartbeat_seconds=5)
     reporter.heartbeat_seconds = 0.01
 
     with reporter.operation("TASK-1", "slow operation"):
-        time.sleep(0.035)
+        assert heartbeat_received.wait(timeout=2.0)
 
     assert any("START" in message for message in messages)
     assert any("WORKING" in message for message in messages)
