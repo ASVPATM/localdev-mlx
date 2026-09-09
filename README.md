@@ -23,10 +23,10 @@ Prefix commands with `localdev-mlx`, or run `localdev-mlx` for an interactive se
 
 | Command | Usage |
 |---|---|
-| `init [PATH]` | Prepare Git, an initial commit, and project settings. |
+| `init [PATH]` | Prepare Git/first commit and settings; keep your branch. |
 | `configure MODEL` | Assign models; `--check` checks your installation. |
 | `model [ROLE]` | Model status; `--load`, `--stop`, `--probe`, `--logs`. |
-| `plan "GOAL"` | Light brief by default; `--mode full` adds local planning. |
+| `plan "GOAL"` | Light brief by default; `--mode full` asks questions, then drafts a detailed brief. |
 | `bug "DESCRIPTION"` | Record a bug; `--local` attempts a fix. |
 | `feature "DESCRIPTION"` | Record a feature; `--local` attempts implementation. |
 | `tweak "DESCRIPTION"` | Record an adjustment; `--local` attempts it. |
@@ -44,15 +44,17 @@ localdev-mlx session --show
 localdev-mlx session --end
 ```
 
-`init` requires your Git name/email and a clean existing repository. New repositories get an initial commit of non-ignored files; check for secrets first.
+`init` requires your Git name/email and a clean existing repository. It keeps your branch (`main` for new projects). New repositories get an initial commit of non-ignored files; check for secrets first.
 
 Requests share `.localdev/runtime/sessions/SESSION-0001.md`; give it to your external model yourself. `--escalate` is the default: no model loading or application edits. `session --new` starts a new numbered handoff. Each interactive launch starts a new session; Ctrl-D ends it. One request runs at a time.
 
 ```bash
 localdev-mlx plan "A reading app" --mode light  # Brief only; no inference.
-localdev-mlx plan "A reading app" --mode full   # Two-pass local proposal; flexible, not fixed.
+localdev-mlx plan "A reading app" --mode full   # Questions, then a detailed, flexible brief.
 localdev-mlx bug "Fix subtraction" --local --allow src/calc.py --read tests/test_calc.py
 ```
+
+Full planning asks focused questions and follow-ups as needed, with no fixed question count. Enter skips one; `/done` finishes; `--no-questions` skips the interview. Your answers stay in the handoff. Small projects get an end-to-end brief, not a forced phased plan.
 
 Local implementation needs configured models, a clean checkout, and real test commands in `.localdev/config.toml`. For a new Python project:
 
@@ -61,7 +63,7 @@ localdev-mlx init . --prepare "uv sync --locked --group dev" \
   --quick-test "uv run pytest -q" --full-test "uv run pytest -q"
 ```
 
-Local edits run in isolated Git worktrees with tests and review before integration into `ai/integration`. Attempts, changed files, test results, and patch evidence appear in the same Git-ignored handoff; failed worktrees are preserved. `session --cancel` stops an active request.
+Only `--local` uses isolated Git worktrees and test/review gates before integration into `ai/integration`. External coding work uses your normal checkout; commit/push only when you choose. Local attempts, changed files, test results, and patches appear in the same Git-ignored handoff; failed worktrees are preserved. `session --cancel` stops an active request.
 
 ## Optional models
 

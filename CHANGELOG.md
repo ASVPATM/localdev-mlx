@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 (unreleased)
+
+- Full plans now ask adaptive clarification questions, preserve user answers, and produce more detailed end-to-end briefs without mandatory phases. Enter skips a question, `/done` finishes, and `--no-questions` bypasses clarification.
+- Planning preserves partial answers on interruption, releases the model while waiting for input, and allows 300 seconds per inference request for longer briefs.
+- `init` keeps the current branch (`main` for new projects); external handoffs no longer impose LocalDev's internal integration-branch workflow. Local execution remains isolated and opt-in.
+
 ## 0.4.0 (unreleased)
 
 - Replaces the command hierarchy with eight commands and numbered sequential sessions; bug/feature/tweak requests defer by default into one concise handoff, with explicit `--local` execution.
