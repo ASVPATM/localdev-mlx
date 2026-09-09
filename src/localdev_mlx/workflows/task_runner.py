@@ -9,7 +9,7 @@ import traceback
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from localdev_mlx.agents import LocalAgents
 from localdev_mlx.config import (
@@ -89,6 +89,8 @@ class TaskRunner:
         request_timeout: int | None = None,
         task_timeout: int | None = None,
         keep_model_loaded: bool = False,
+        on_update: Callable[[TaskRecord], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ):
         if depth not in {"fast", "balanced", "deep"}:
             raise ValueError("depth must be fast, balanced, or deep")
@@ -110,6 +112,7 @@ class TaskRunner:
             self.overrides["fallback"] = False
         self.policy = ExecutionConfig(**self.overrides)
         self.keep_model_loaded = keep_model_loaded
+        self.on_update, self.cancelled = on_update, cancelled
         self.workspace: TaskWorkspace | None = None
         self.applied_digests: set[str] = set()
 
@@ -718,7 +721,7 @@ class TaskRunner:
         plan_only: bool = False,
     ) -> TaskRecord:
         git = GitRepository(repository)
-        self.store = TaskStore(git.root)
+        self.store = TaskStore(git.root, on_save=self.on_update)
         self.task = self.store.create(kind, description, "local")
         self.task.controller_pid = os.getpid()
         self.workspace, self.applied_digests = None, set()
@@ -736,7 +739,10 @@ class TaskRunner:
             with deadline(
                 self.policy.task_timeout_seconds,
                 label="Whole task",
-                cancelled=lambda: (self.store.path(self.task.id) / "cancel.request").exists(),
+                cancelled=lambda: (
+                    (self.store.path(self.task.id) / "cancel.request").exists()
+                    or bool(self.cancelled and self.cancelled())
+                ),
             ):
                 self._execute(
                     git, direct_allowed_paths, direct_read_paths or [], auto_integrate, plan_only
@@ -772,7 +778,7 @@ class TaskRunner:
                     self.store.write_text(
                         self.task.id, "CURRENT_DIFF.patch", git.diff(self.workspace.path)
                     )
-                if external and status != TaskStatus.CANCELLED:
+                if external and status != TaskStatus.CANCELLED and self.on_update is None:
                     from localdev_mlx.escalation.bundle import build_escalation_bundle
 
                     bundle, visible = build_escalation_bundle(
@@ -810,7 +816,6 @@ class TaskRunner:
             self.store.save(self.task)
             self.progress.emit(
                 f"[{self.task.id}] COMPLETE — status={self.task.status.value}, "
-                f"elapsed={format_duration(time.monotonic() - started)}; "
-                f"localdev-mlx show-task {self.task.id} --repo {git.root}"
+                f"elapsed={format_duration(time.monotonic() - started)}"
             )
         return self.task

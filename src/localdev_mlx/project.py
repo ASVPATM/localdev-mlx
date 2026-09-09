@@ -2,111 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from localdev_mlx.config import write_default_project_config
+from localdev_mlx.config import load_project_config, write_default_project_config
+from localdev_mlx.git.edits import DEFAULT_SECRET_PATTERNS, _matches_any
 from localdev_mlx.git.repository import GitError, GitRepository
 
-AGENTS_TEMPLATE = """# AGENTS.md
+AGENTS_TEMPLATE = """# Repository rules
 
-## Authority order
-
-1. Working code and passing tests
-2. Public interfaces and `docs/ai/CONTRACTS.md`
-3. `docs/ai/CURRENT_STATE.md`
-4. `docs/ai/DECISIONS.md`
-5. `docs/ai/MASTER_PLAN.md`
-6. Historical handoffs and chat transcripts
-
-## Permanent rules
-
-- Read `.localdev/config.toml` and relevant `docs/ai/` files before changing code.
-- Make the smallest change that satisfies the active task.
-- Do not fabricate test results, APIs, files, domain facts, or external data.
-- Do not read or edit secrets, credentials, key files, or `.env` files.
-- Preserve stable contracts unless the task explicitly authorizes a contract change.
-- Add or update tests for behavior changes.
-- Run the configured quick tests during implementation and full tests before integration.
-- Request external review for security, destructive migrations, high-risk concurrency, cryptography, and major architecture work.
-- Preserve unresolved external tasks; do not mark them resolved until the fix is committed to `ai/integration`.
-- External reviewers must start from the latest `ai/integration` commit because issue bundles can become stale.
-- Do not merge local-model work directly into `main`; use `ai/integration` until independent review.
+- Current source, public interfaces, and tests are authoritative.
+- Preserve unrelated work and never read or edit secrets or credentials.
+- Make focused changes and add regression tests for behavior changes.
+- Validation commands are in `.localdev/config.toml`; record only actual results.
+- Local-model work stays on the configured integration branch until independent review.
+- For external work, use the relevant `.localdev/runtime/sessions/SESSION-*.md` handoff.
+  Plans are provisional; inspect current source and adapt them. No other generated docs are required.
 """
-
-CURRENT_STATE_TEMPLATE = """# Current State
-
-Last updated: not yet populated
-
-## Implemented
-
-- LocalDev project metadata and AI collaboration structure.
-
-## Not implemented
-
-- Project-specific functionality has not yet been documented here.
-
-## Validation
-
-- Add only commands that were actually executed and their real results.
-"""
-
-DECISIONS_TEMPLATE = """# Decisions
-
-Record only decisions that have actually been made.
-
-## D-001 — Local-model integration branch
-
-Local model work is accumulated on `ai/integration`. The `main` branch remains the reviewed release branch.
-"""
-
-TASK_QUEUE_TEMPLATE = """# Task Queue
-
-This file is the human-readable queue. LocalDev runtime task state is stored outside Git and can be viewed with `localdev-mlx status`.
-
-Unresolved external work is listed with `localdev-mlx frontier status`. Use `localdev-mlx frontier bundle` to prepare one current batch for a stronger model or human.
-"""
-
-CONTEXT_MAP_TEMPLATE = """# Context Map
-
-- `AGENTS.md`: permanent repository rules
-- `docs/ai/PROJECT_BRIEF.md`: product intent and requirements
-- `docs/ai/ARCHITECTURE.md`: component boundaries and data flow
-- `docs/ai/CONTRACTS.md`: stable interfaces and invariants
-- `docs/ai/CURRENT_STATE.md`: what actually works now
-- `docs/ai/DECISIONS.md`: accepted decisions and rationale
-- `docs/ai/TASK_QUEUE.md`: planned work
-- `docs/ai/handoffs/`: completed task summaries
-- `docs/ai/reviews/`: portable external-review bundles when explicitly exported
-- `.localdev/runtime/reviews/`: ignored project-visible mirrors of failed/deferred task bundles
-- `.localdev/runtime/frontier/`: ignored project-visible frontier batch bundles
-"""
-
-HANDOFF_TEMPLATE = """# TASK-ID — Handoff
-
-## Goal
-
-## Completed
-
-## Files changed
-
-## Tests run
-
-## Exact results
-
-## Decisions
-
-## Deferred
-
-## Risks and review points
-
-## Recommended next task
-"""
-
-
-def _write_if_missing(path: Path, content: str) -> bool:
-    if path.exists():
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return True
 
 
 def initialize_project(
@@ -118,31 +27,80 @@ def initialize_project(
     switch_integration: bool = True,
     base_branch: str | None = None,
     integration_branch: str = "ai/integration",
+    commit: bool = False,
+    prepare_commands: list[str] | None = None,
 ) -> tuple[Path, list[Path]]:
-    git = GitRepository(repository)
+    """Prepare metadata only; the CLI also commits it. Never start a model or tests."""
+    repository = repository.expanduser().resolve()
+    repository.mkdir(parents=True, exist_ok=True)
+    try:
+        git = GitRepository(repository)
+    except GitError:
+        GitRepository._run(repository, ["init", "-b", base_branch or "main"])
+        git = GitRepository(repository)
+    if git.root != repository:
+        raise GitError(f"Initialize the repository root explicitly: {git.root}")
     root = git.root
-    if not git.has_commits():
+    initial = not git.has_commits()
+    if not all(git.configured_identity()):
         raise GitError(
-            "LocalDev requires an initial Git commit. Commit the current repository first, then run localdev-mlx init again."
+            "Configure Git user.name and user.email, then rerun init; LocalDev does not invent a commit identity"
         )
-    if not git.is_clean(root):
-        raise GitError("The repository must be clean before LocalDev initialization")
-    current_branch = git.current_branch(root)
-    selected_base = base_branch or current_branch
+    config_path = root / ".localdev/config.toml"
+    for path in (root / ".localdev", config_path, root / ".gitignore", root / "AGENTS.md"):
+        if path.is_symlink():
+            raise GitError(f"Refusing symlinked initialization metadata: {path}")
+    if not initial and not git.is_clean():
+        raise GitError(
+            "Commit or stash existing changes before init; LocalDev will not commit unrelated work"
+        )
+    current_branch = git.current_branch()
+    if not current_branch:
+        raise GitError("Check out a named branch before initialization")
+    if config_path.exists():
+        existing = load_project_config(root)
+        selected_base, integration_branch = existing.base_branch, existing.integration_branch
+    else:
+        selected_base = base_branch or current_branch
+        if selected_base == integration_branch:
+            selected_base = "main" if git.branch_exists("main") else current_branch
     if selected_base == integration_branch:
-        selected_base = "main" if git.branch_exists("main") else current_branch
-    if not git.branch_exists(selected_base):
+        raise GitError("Base and local integration branches must differ")
+    if not initial and not git.branch_exists(selected_base):
         raise GitError(f"Base branch does not exist: {selected_base}")
+    GitRepository._run(root, ["check-ref-format", "--branch", integration_branch])
+    changed = []
+    gitignore = root / ".gitignore"
+    ignore_lines = [
+        ".localdev/runtime/",
+        ".DS_Store",
+        ".venv/",
+        "__pycache__/",
+        "*.pyc",
+        "*.egg-info/",
+    ]
+    text = gitignore.read_text() if gitignore.exists() else ""
+    additions = [line for line in ignore_lines if line not in text.splitlines()]
+    if additions:
+        gitignore.write_text(
+            text + ("\n" if text and not text.endswith("\n") else "") + "\n".join(additions) + "\n"
+        )
+        changed.append(gitignore)
+    if initial:
+        files = git._run(root, ["ls-files", "-co", "--exclude-standard", "-z"]).stdout.split("\0")
+        secrets = sorted({p for p in files if p and _matches_any(p, DEFAULT_SECRET_PATTERNS)})
+        if secrets:
+            raise GitError(
+                "Refusing to include credential-like files in the initial commit. Ignore or remove them, then retry: "
+                + ", ".join(secrets)
+            )
+        git._run(root, ["add", "-A"])
+        git._run(root, ["commit", "--allow-empty", "-m", "chore: initial project snapshot"])
     if switch_integration:
         if not git.branch_exists(integration_branch):
-            if current_branch != selected_base:
-                GitRepository._run(root, ["switch", selected_base])
-            GitRepository._run(root, ["switch", "-c", integration_branch])
-        elif git.current_branch(root) != integration_branch:
-            GitRepository._run(root, ["switch", integration_branch])
-
-    changed: list[Path] = []
-    config_path = root / ".localdev" / "config.toml"
+            git._run(root, ["switch", "-c", integration_branch, selected_base])
+        elif git.current_branch() != integration_branch:
+            git._run(root, ["switch", integration_branch])
     if not config_path.exists():
         write_default_project_config(
             root,
@@ -151,41 +109,14 @@ def initialize_project(
             test_env=test_env,
             base_branch=selected_base,
             integration_branch=integration_branch,
+            prepare_commands=prepare_commands,
         )
         changed.append(config_path)
-    templates = {
-        root / "AGENTS.md": AGENTS_TEMPLATE,
-        root / "docs/ai/CURRENT_STATE.md": CURRENT_STATE_TEMPLATE,
-        root / "docs/ai/DECISIONS.md": DECISIONS_TEMPLATE,
-        root / "docs/ai/TASK_QUEUE.md": TASK_QUEUE_TEMPLATE,
-        root / "docs/ai/CONTEXT_MAP.md": CONTEXT_MAP_TEMPLATE,
-        root / "docs/ai/HANDOFF_TEMPLATE.md": HANDOFF_TEMPLATE,
-    }
-    for path, content in templates.items():
-        if _write_if_missing(path, content):
-            changed.append(path)
-    (root / "docs/ai/handoffs").mkdir(parents=True, exist_ok=True)
-    (root / "docs/ai/reviews").mkdir(parents=True, exist_ok=True)
-    (root / ".localdev/runtime/reviews").mkdir(parents=True, exist_ok=True)
-    (root / ".localdev/runtime/frontier").mkdir(parents=True, exist_ok=True)
-
-    gitignore = root / ".gitignore"
-    ignore_lines = [".localdev/runtime/", ".DS_Store", ".venv/", "__pycache__/", "*.pyc", "*.egg-info/"]
-    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-    additions = [line for line in ignore_lines if line not in existing.splitlines()]
-    if additions:
-        suffix = "" if not existing or existing.endswith("\n") else "\n"
-        gitignore.write_text(existing + suffix + "\n".join(additions) + "\n", encoding="utf-8")
-        changed.append(gitignore)
+    agents = root / "AGENTS.md"
+    if not agents.exists():
+        agents.write_text(AGENTS_TEMPLATE)
+        changed.append(agents)
+    if commit and not git.is_clean():
+        git._run(root, ["add", "--", *[str(p.relative_to(root)) for p in changed]])
+        git._run(root, ["commit", "-m", "chore: prepare LocalDev session workflow"])
     return root, changed
-
-
-def finish_initialization(repository: Path) -> Path:
-    git = GitRepository(repository)
-    if not git.is_clean(git.root):
-        raise GitError("Commit or discard project initialization changes before --finish")
-    if not git.branch_exists("ai/integration"):
-        GitRepository._run(git.root, ["switch", "-c", "ai/integration"])
-    elif git.current_branch(git.root) != "ai/integration":
-        GitRepository._run(git.root, ["switch", "ai/integration"])
-    return git.root

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+- Replaces the command hierarchy with eight commands and numbered sequential sessions; bug/feature/tweak requests defer by default into one concise handoff, with explicit `--local` execution.
+- Combines idea/planning into light briefs and two-pass, provisional full plans; removes public frontier, task-ID, queue, release-candidate, and sample commands.
+- Preserves local edit/test/commit evidence and optional patches in the session handoff, including failed and interrupted runs; adds cross-process exclusion, scoped cancellation, and safe session recovery/rotation.
+- Initializes Git and its first commit automatically when needed, generates only minimal setup, and retains existing configuration/history. Updates installation and validation scripts for the new CLI.
+
 ## 0.3.1
 
 - Runs cancellation regression checks through a separate CLI process, preventing the test harness from intercepting the active task's signal.

@@ -6,6 +6,6 @@ include .editorconfig
 include .gitignore
 recursive-include scripts *.sh *.py
 include uv.lock
-recursive-include docs/development STABILIZATION_HANDOFF.md
+exclude docs/development/STABILIZATION_HANDOFF.md
 recursive-include tests *.py
 recursive-include .github *.yml

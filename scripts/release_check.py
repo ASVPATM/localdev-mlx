@@ -9,7 +9,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 
@@ -58,6 +60,21 @@ def main():
         ):
             run(command, cwd=root, env=env)
         wheel = next((temp / "dist").glob("*.whl"))
+        for artifact in (temp / "dist").iterdir():
+            if artifact.suffix == ".whl":
+                with zipfile.ZipFile(artifact) as archive:
+                    names = archive.namelist()
+            elif artifact.name.endswith(".tar.gz"):
+                with tarfile.open(artifact) as archive:
+                    names = archive.getnames()
+            else:
+                continue
+            assert not any(Path(name).name == "STABILIZATION_HANDOFF.md" for name in names), (
+                f"Private stabilization handoff leaked into {artifact.name}"
+            )
+        print(
+            "Privacy check passed: stabilization handoff excluded from wheel and sdist", flush=True
+        )
         run(["uv", "venv", "--python", sys.executable, temp / "wheel-env"], cwd=root, env=env)
         python = temp / "wheel-env/bin/python"
         cli = temp / "wheel-env/bin/localdev-mlx"
@@ -78,22 +95,26 @@ def main():
         assert values["versions_agree"], values
         assert str(temp / "wheel-env") in values["module_path"], values
         print(identity, flush=True)
-        for command in ("--version", "--help", "guide", "diagnostics", "doctor"):
-            run([cli, command], cwd=temp, env=env)
+        for command in (
+            ["--version"],
+            ["--help"],
+            ["configure", "--check"],
+            ["session", "--help"],
+            ["plan", "--help"],
+        ):
+            run([cli, *command], cwd=temp, env=env)
         run(
             [python, "-I", "-m", "pytest", "-o", "addopts=", "-q", "-ra", root / "tests"],
             cwd=temp,
             env=env,
         )
-        run([cli, "sample", "create", temp / "sample"], cwd=temp, env=env)
-        run([cli, "sample", "mock-run", temp / "sample"], cwd=temp, env=env)
         if artifact_dir:
             artifact_dir.mkdir(parents=True, exist_ok=True)
             for artifact in (temp / "dist").iterdir():
                 if artifact.is_file():
                     shutil.copy2(artifact, artifact_dir / artifact.name)
         print(
-            "Release checks passed: source, wheel, CLI, mock workflow. Real MLX checks are separate.",
+            "Release checks passed: source, wheel, CLI, session and mock workflows. Real MLX checks are separate.",
             flush=True,
         )
 

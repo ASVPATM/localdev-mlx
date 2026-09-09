@@ -41,6 +41,9 @@ def installation_identity() -> dict:
         "source_commit": commit,
         "versions_agree": distribution == localdev_mlx.__version__,
         "capabilities": [
+            "session-handoff-v1",
+            "defer-by-default",
+            "sequential-session-lock",
             "task-schema-v2",
             "bounded-attempts",
             "context-manifests",

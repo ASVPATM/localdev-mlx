@@ -7,13 +7,17 @@ import tempfile
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Callable
 
 from localdev_mlx.config import canonical_repository, project_state_dir
 from localdev_mlx.schemas import ExternalReviewState, TaskKind, TaskRecord
 
 
 class TaskStore:
-    def __init__(self, repository: Path) -> None:
+    def __init__(
+        self, repository: Path, *, on_save: Callable[[TaskRecord], None] | None = None
+    ) -> None:
+        self.on_save = on_save
         self.repository = canonical_repository(repository)
         self.root = project_state_dir(self.repository) / "tasks"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -75,6 +79,8 @@ class TaskStore:
             temporary = Path(handle.name)
         temporary.write_text(task.model_dump_json(indent=2), encoding="utf-8")
         temporary.replace(target)
+        if self.on_save is not None:
+            self.on_save(task)
 
     def load(self, task_id: str) -> TaskRecord:
         path = self.path(task_id) / "task.json"

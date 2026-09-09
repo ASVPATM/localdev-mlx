@@ -139,30 +139,32 @@ def test_repository_instructions_do_not_grant_authority(sample_repo, global_conf
 def test_cli_cancel_marker_and_diagnostics(sample_repo, monkeypatch):
     from rich.console import Console
 
+    from localdev_mlx.sessions import SessionStore
+
     monkeypatch.setattr("localdev_mlx.cli.console", Console(force_terminal=True))
-    task = TaskStore(sample_repo).create(TaskKind.BUG, "pending", "local")
+    store = SessionStore(sample_repo)
     runner = CliRunner()
-    result = runner.invoke(app, ["cancel", task.id, "--repo", str(sample_repo)])
-    assert result.exit_code == 0
-    assert (TaskStore(sample_repo).path(task.id) / "cancel.request").exists()
-    result = runner.invoke(app, ["diagnostics"])
+    with store.operation("bug", "pending", "local") as (session, entry):
+        result = runner.invoke(app, ["session", "--cancel", "--repo", str(sample_repo)])
+        assert result.exit_code == 0
+        assert store.cancel_path(session, entry).exists()
+    result = runner.invoke(app, ["configure", "--check"])
     assert result.exit_code == 0
     assert json.loads(result.stdout)["versions_agree"]
-    result = runner.invoke(app, ["show-task", task.id, "--repo", str(sample_repo)])
+    result = runner.invoke(app, ["session", "--show", "--repo", str(sample_repo)])
     assert result.exit_code == 0
-    assert json.loads(result.stdout)["id"] == task.id
+    assert "pending" in result.stdout
 
 
 def test_cancel_command_interrupts_active_request(sample_repo, global_config):
     from localdev_mlx import config as config_module
+    from localdev_mlx.sessions import SessionStore
 
     class Waiting(MockStructuredProvider):
         request_started = None
         cancellation_process = None
 
         def complete_structured(self, **kwargs):
-            store = TaskStore(sample_repo)
-            current = store.list()[0]
             self.request_started = time.monotonic()
             # Match real use: a second CLI process sends the cancellation marker.
             # An in-process CliRunner can catch the active task's SIGALRM as its
@@ -173,8 +175,8 @@ def test_cancel_command_interrupts_active_request(sample_repo, global_config):
                     "-I",
                     "-m",
                     "localdev_mlx",
-                    "cancel",
-                    current.id,
+                    "session",
+                    "--cancel",
                     "--repo",
                     str(sample_repo),
                 ],
@@ -186,10 +188,17 @@ def test_cancel_command_interrupts_active_request(sample_repo, global_config):
             time.sleep(10)
 
     provider = Waiting()
+    store = SessionStore(sample_repo)
     try:
-        task = TaskRunner(global_config=global_config, provider=provider, manage_models=False).run(
-            repository=sample_repo, kind=TaskKind.BUG, description="repair"
-        )
+        with store.operation("bug", "repair", "local") as (session, entry):
+            task = TaskRunner(
+                global_config=global_config,
+                provider=provider,
+                manage_models=False,
+                on_update=lambda task: store.record_task(session, entry, task),
+                cancelled=lambda: store.cancel_path(session, entry).exists(),
+            ).run(repository=sample_repo, kind=TaskKind.BUG, description="repair")
+            entry["state"] = task.status.value
     finally:
         if provider.cancellation_process is not None:
             try:
@@ -264,6 +273,7 @@ def test_cli_limits_are_discoverable(command):
         "--no-fallback",
         "--request-timeout",
         "--task-timeout",
-        "--plan-only",
+        "--local",
+        "--escalate",
     ]:
         assert option in Text.from_ansi(result.stdout).plain

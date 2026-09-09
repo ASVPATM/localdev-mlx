@@ -54,7 +54,9 @@ def test_frontier_batch_tracks_latest_head_and_resolves_tasks(sample_repo: Path)
     assert set(batch.task_ids) == {first.id, second.id}
     assert (visible / "FRONTIER_BATCH_PROMPT.md").exists()
     assert (visible / "OPEN_EXTERNAL_TASKS.md").exists()
-    assert TaskStore(sample_repo).load(first.id).external_review_state == ExternalReviewState.BUNDLED
+    assert (
+        TaskStore(sample_repo).load(first.id).external_review_state == ExternalReviewState.BUNDLED
+    )
 
     git = GitRepository(sample_repo)
     config = load_project_config(sample_repo)
@@ -93,25 +95,18 @@ def test_cli_frontier_only_records_issue_without_global_config(sample_repo: Path
             "Record this for later.",
             "--repo",
             str(sample_repo),
-            "--frontier-only",
+            "--escalate",
         ],
     )
     assert result.exit_code == 0, result.stdout
-    assert "Local outcome: deferred" in result.stdout
-    assert "Frontier state: pending" in result.stdout
+    assert "deferred" in result.stdout
+    assert "SESSION-0001.md" in result.stdout
 
 
-def test_guide_and_frontier_help_are_discoverable() -> None:
-    guide_result = runner.invoke(app, ["guide"])
-    assert guide_result.exit_code == 0
-    assert "frontier bundle" in guide_result.stdout
-
-    help_result = runner.invoke(app, ["frontier", "--help"])
-    assert help_result.exit_code == 0
-    assert "bundle" in help_result.stdout
-    assert "resolve" in help_result.stdout
-    assert "supersede" in help_result.stdout
-    assert "sync" in help_result.stdout
+def test_retired_frontier_commands_are_not_hidden_aliases() -> None:
+    for command in ("guide", "frontier", "sample", "idea", "run-queue", "release-candidate"):
+        result = runner.invoke(app, [command, "--help"])
+        assert result.exit_code != 0
 
 
 def test_new_local_task_starts_from_latest_frontier_commit(
@@ -152,9 +147,7 @@ def test_new_local_task_starts_from_latest_frontier_commit(
 
     assert task.status == TaskStatus.INTEGRATED
     assert task.base_commit == frontier_commit
-    assert "Frontier-reviewed context" in (sample_repo / "README.md").read_text(
-        encoding="utf-8"
-    )
+    assert "Frontier-reviewed context" in (sample_repo / "README.md").read_text(encoding="utf-8")
 
 
 def test_supersede_closes_duplicate_external_item(sample_repo: Path) -> None:
@@ -210,22 +203,14 @@ def test_sync_fast_forwards_integration_to_external_branch(sample_repo: Path) ->
     assert (integration / "FRONTIER_MAIN_FIX.md").exists()
 
 
-def test_cli_defer_file_records_multiple_issues(sample_repo: Path, tmp_path: Path) -> None:
-    issue_file = tmp_path / "frontier-issues.json"
-    issue_file.write_text(
-        """[
-  {"kind": "bug", "description": "First issue"},
-  {"kind": "feature", "description": "Second issue", "reason": "Needs API review"}
-]""",
-        encoding="utf-8",
-    )
+def test_cli_records_multiple_issues_in_one_handoff(sample_repo: Path) -> None:
+    from localdev_mlx.sessions import SessionStore
 
-    result = runner.invoke(
-        app,
-        ["frontier", "defer-file", str(issue_file), "--repo", str(sample_repo)],
-    )
-
-    assert result.exit_code == 0, result.stdout
-    open_tasks = TaskStore(sample_repo).open_external()
-    assert len(open_tasks) == 2
-    assert "Create one combined prompt" in result.stdout
+    for kind, text in (("bug", "First issue"), ("feature", "Second issue; needs API review")):
+        result = runner.invoke(app, [kind, text, "--repo", str(sample_repo)])
+        assert result.exit_code == 0, result.stdout
+    store = SessionStore(sample_repo)
+    handoff = store.handoff(store.current()).read_text()
+    assert "First issue" in handoff and "Second issue" in handoff
+    assert len(list(store.visible.glob("*.md"))) == 1
+    assert TaskStore(sample_repo).list() == []

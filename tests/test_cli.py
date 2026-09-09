@@ -20,6 +20,13 @@ def test_editable_cache_tracks_authoritative_version() -> None:
     assert {"pyproject.toml", "src/localdev_mlx/__init__.py"} <= files
 
 
+def test_private_stabilization_report_is_not_documented_or_packaged() -> None:
+    root = Path(__file__).resolve().parents[1]
+    assert "/docs/development/STABILIZATION_HANDOFF.md" in (root / ".gitignore").read_text()
+    assert "exclude docs/development/STABILIZATION_HANDOFF.md" in (root / "MANIFEST.in").read_text()
+    assert "STABILIZATION_HANDOFF" not in (root / "README.md").read_text()
+
+
 @pytest.mark.parametrize("force_color", [False, True])
 def test_version_option(monkeypatch, force_color) -> None:
     monkeypatch.setattr("localdev_mlx.cli.console", Console(force_terminal=force_color))
@@ -34,7 +41,8 @@ def test_help_lists_core_workflows() -> None:
     assert "configure" in result.stdout
     assert "bug" in result.stdout
     assert "feature" in result.stdout
-    assert "release-candidate" in result.stdout
+    assert "session" in result.stdout
+    assert "release-candidate" not in result.stdout
 
 
 def test_configure_forwards_general_model_options(monkeypatch, tmp_path) -> None:
@@ -73,11 +81,12 @@ def test_bug_help_documents_direct_path_options() -> None:
     result = runner.invoke(app, ["bug", "--help"])
     assert result.exit_code == 0
     output = Text.from_ansi(result.stdout).plain
-    assert "--direct" in output
+    assert "--local" in output
     assert "--allow" in output
     assert "--read" in output
 
 
-def test_direct_bug_requires_allow_path() -> None:
-    result = runner.invoke(app, ["bug", "example", "--direct"])
-    assert result.exit_code != 0 or "requires at least one --allow" in result.stdout
+def test_direct_bug_requires_explicit_local_opt_in() -> None:
+    result = runner.invoke(app, ["bug", "example", "--allow", "app.py"])
+    assert result.exit_code != 0
+    assert "require --local" in result.stdout

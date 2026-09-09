@@ -10,8 +10,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RELEASE_BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/localdev-install.XXXXXX")"
 uv build "$ROOT" --wheel --out-dir "$RELEASE_BUILD_DIR"
 uv tool install --force "$RELEASE_BUILD_DIR"/*.whl
-localdev-mlx diagnostics
+localdev-mlx configure --check
 
 echo
 echo "Installed: localdev-mlx"
-echo "Next: localdev-mlx configure YOUR_MODEL_ID --server /path/to/mlx_vlm.server"
+echo "Next: run localdev-mlx init in your project, then localdev-mlx to begin a session."

@@ -500,6 +500,7 @@ def write_default_project_config(
     test_env: dict[str, str] | None = None,
     base_branch: str = "main",
     integration_branch: str = "ai/integration",
+    prepare_commands: list[str] | None = None,
 ) -> Path:
     path = repository / ".localdev" / "config.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -530,7 +531,7 @@ reviewer_timeout_seconds = 120
 task_timeout_seconds = 900
 
 [prepare]
-commands = []
+commands = {toml_array(prepare_commands or [])}
 timeout_seconds = 600
 
 [context]
