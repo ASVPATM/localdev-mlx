@@ -47,6 +47,7 @@ def test_adaptive_followups_are_not_capped_at_four_questions(sample_repo, global
     for call in provider.calls[-2:]:
         assert all(f"User preference {i}" in call["user_prompt"] for i in range(8))
         assert call["profile"].max_tokens <= 4096
+        assert call["profile"].request_timeout_seconds == 300
         assert "one complete end-to-end implementation" in call["system_prompt"]
         assert "Do not invent user answers" in call["system_prompt"]
         assert "existing project checkout" in call["system_prompt"]

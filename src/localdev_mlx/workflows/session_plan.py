@@ -92,7 +92,7 @@ def full_plan(
     manager: ModelManager | None = None,
     manage_models: bool = True,
     progress=lambda message: None,
-    request_timeout: int = 120,
+    request_timeout: int = 300,
     ask: Callable[[str], str | None] | None = None,
 ) -> None:
     """None from ask finishes early; empty answers skip individual questions."""

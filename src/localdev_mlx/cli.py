@@ -286,7 +286,7 @@ def plan(
         typer.Option("--no-questions", help="Skip clarification; full plans label assumptions."),
     ] = False,
     repo: Annotated[Path | None, typer.Option("--repo")] = None,
-    request_timeout: Annotated[int, typer.Option("--request-timeout", min=1)] = 120,
+    request_timeout: Annotated[int, typer.Option("--request-timeout", min=1)] = 300,
 ) -> None:
     """Record a light brief, or clarify requirements and prepare a detailed full handoff."""
     try:
