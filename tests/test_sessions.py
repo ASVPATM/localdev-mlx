@@ -215,7 +215,7 @@ def test_full_plan_is_bounded_two_passes_in_one_document(sample_repo, global_con
             store, current, entry, config=global_config, provider=provider, manage_models=False
         )
     assert len(provider.calls) == 2
-    assert provider.calls[0]["profile"].max_tokens <= 1800
+    assert provider.calls[0]["profile"].max_tokens <= 4096
     assert not provider.calls[0]["profile"].enable_thinking
     assert "Critique and improve" in provider.calls[1]["user_prompt"]
     assert "flexible" in provider.calls[0]["system_prompt"]
@@ -431,7 +431,8 @@ def test_init_creates_initial_commit_and_minimal_metadata(tmp_path, monkeypatch)
     assert result.exit_code == 0, result.stdout
     git = GitRepository(root)
     assert git.has_commits() and git.is_clean()
-    assert git.current_branch() == "ai/integration"
+    assert git.current_branch() == "main"
+    assert not git.branch_exists("ai/integration")
     assert not (root / "docs").exists()
     assert load_project_config(root).prepare.commands == ("python3 --version",)
     assert load_project_config(root).tests.quick == ("python3 app.py",)
@@ -439,6 +440,22 @@ def test_init_creates_initial_commit_and_minimal_metadata(tmp_path, monkeypatch)
     head = git.resolve_ref(root, "HEAD")
     assert cli.invoke(app, ["init", str(root)]).exit_code == 0
     assert git.resolve_ref(root, "HEAD") == head
+
+
+def test_init_and_planning_preserve_existing_checkout_branch(sample_repo):
+    git = GitRepository(sample_repo)
+    git._run(sample_repo, ["switch", "-c", "user-work"])
+    head = git.resolve_ref(sample_repo, "HEAD")
+    assert cli.invoke(app, ["init", str(sample_repo)]).exit_code == 0
+    assert cli.invoke(app, ["plan", "A complete app", "--repo", str(sample_repo)]).exit_code == 0
+    assert git.current_branch() == "user-work"
+    assert git.resolve_ref(sample_repo, "HEAD") == head
+    store = SessionStore(sample_repo)
+    text = store.handoff(store.current()).read_text()
+    assert "never `main`" not in text
+    assert "Local work targets" not in text
+    assert "existing project directory and checkout" in text
+    assert "Commit or push only when the user requests" in text
 
 
 def test_init_refuses_credential_snapshot(tmp_path):

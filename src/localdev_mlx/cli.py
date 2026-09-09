@@ -160,6 +160,7 @@ def init_project(
             test_env=environment,
             prepare_commands=prepare,
             commit=True,
+            switch_integration=False,
         )
         console.print(
             f"{'Prepared' if changed else 'Already initialized'}: {root}\nBranch: {GitRepository(root).current_branch()}\nRun localdev-mlx to open a session. No models or tests were run.",
@@ -278,15 +279,21 @@ def model(
 def plan(
     description: Annotated[str, typer.Argument(help="Idea, goal, or planning request.")],
     mode: Annotated[
-        str, typer.Option("--mode", help="light: no model; full: two provisional planning passes.")
+        str, typer.Option("--mode", help="light: no model; full: questions, then a detailed brief.")
     ] = "light",
+    no_questions: Annotated[
+        bool,
+        typer.Option("--no-questions", help="Skip clarification; full plans label assumptions."),
+    ] = False,
     repo: Annotated[Path | None, typer.Option("--repo")] = None,
     request_timeout: Annotated[int, typer.Option("--request-timeout", min=1)] = 120,
 ) -> None:
-    """Add a lightweight brief or a flexible, detailed local proposal to the handoff."""
+    """Record a light brief, or clarify requirements and prepare a detailed full handoff."""
     try:
         if mode not in {"light", "full"}:
             raise ValueError("--mode must be light or full")
+        if no_questions and mode != "full":
+            raise ValueError("--no-questions requires --mode full")
         store = SessionStore(_repo(repo))
         with store.operation("plan", description, mode) as (session, entry):
             if mode == "full":
@@ -298,6 +305,7 @@ def plan(
                     provider=MLXOpenAIProvider(),
                     request_timeout=request_timeout,
                     progress=lambda message: console.print(message, markup=False),
+                    ask=None if no_questions else _planning_answer,
                 )
             else:
                 entry["state"] = "ready for external planning"
@@ -309,6 +317,17 @@ def plan(
         raise typer.Exit(130)
     except Exception as exc:
         _error(exc)
+
+
+def _planning_answer(question: str) -> str | None:
+    console.print(question, markup=False)
+    while True:
+        answer = input("Answer (Enter skips; /done finishes questions): ")
+        if answer.strip().casefold() == "/done":
+            return None
+        if len(answer.strip()) <= 4000:
+            return answer
+        console.print("Please keep this answer within 4,000 characters.", markup=False)
 
 
 def _register_maintenance(name: str) -> None:

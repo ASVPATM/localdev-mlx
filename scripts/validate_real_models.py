@@ -50,6 +50,7 @@ def create_validation_project(root: Path) -> None:
         full_tests=["python3 -m unittest discover -s tests -v"],
         test_env={"PYTHONPATH": "src"},
         commit=True,
+        switch_integration=False,
     )
 
 
@@ -118,6 +119,24 @@ def main():
             raise RuntimeError(deferred.stdout)
         store = SessionStore(sample)
         started = time.monotonic()
+        answers = []
+
+        def answer(question):
+            # Explicit synthetic-user answers: exercise real question generation without
+            # pretending these came from the user or waiting on an unattended terminal.
+            if len(answers) >= 12:
+                return None
+            value = (
+                "Validation fixture preference: one user, offline Python standard library only; "
+                "preserve the existing add/subtract interface and unittest suite. No new UI, "
+                "cloud services, persistence, packaging, or multiplication in this request. "
+                "Success means subtraction is correct and addition still passes. "
+                "Implement the small scope end to end, with no phased rollout."
+            )
+            answers.append({"question": question, "answer": value})
+            print(f"Synthetic-user clarification: {question}", flush=True)
+            return value
+
         with store.operation(
             "plan",
             "Suggest a flexible approach for maintaining this small calculator CLI; propose tests and note open questions. Do not implement anything.",
@@ -132,8 +151,13 @@ def main():
                 manager=manager,
                 request_timeout=args.request_timeout,
                 progress=lambda message: print(message, flush=True),
+                ask=answer,
             )
-        report["plan"] = {"elapsed_seconds": round(time.monotonic() - started, 3), "entry": entry}
+        report["plan"] = {
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "entry": entry,
+            "synthetic_user_answers": answers,
+        }
         save()
         started = time.monotonic()
         with store.operation(
@@ -174,6 +198,9 @@ def main():
             "handoff_chars": len(store.handoff(session).read_text()),
             "patch_exists": bool(entry.get("patch") and (sample / entry["patch"]).is_file()),
             "no_docs_hierarchy": not (sample / "docs/ai").exists(),
+            "checkout_branch": GitRepository(sample).current_branch(),
+            "no_external_branch_restriction": "Local work targets"
+            not in store.handoff(session).read_text(),
         }
         save()
     finally:
@@ -187,6 +214,8 @@ def main():
         and report["session"]["requests"] == 3
         and report["session"]["patch_exists"]
         and report["session"]["no_docs_hierarchy"]
+        and report["session"]["checkout_branch"] == "main"
+        and report["session"]["no_external_branch_restriction"]
         and report["managed_server_stopped"]
     )
     print(f"Real model validation passed={passed}; results={report_path}", flush=True)

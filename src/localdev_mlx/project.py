@@ -12,7 +12,8 @@ AGENTS_TEMPLATE = """# Repository rules
 - Preserve unrelated work and never read or edit secrets or credentials.
 - Make focused changes and add regression tests for behavior changes.
 - Validation commands are in `.localdev/config.toml`; record only actual results.
-- Local-model work stays on the configured integration branch until independent review.
+- External coding work uses the user's project checkout; no LocalDev branch workflow is required.
+- Commit or push only when the user requests it. LocalDev's optional local attempts use isolated worktrees.
 - For external work, use the relevant `.localdev/runtime/sessions/SESSION-*.md` handoff.
   Plans are provisional; inspect current source and adapt them. No other generated docs are required.
 """
