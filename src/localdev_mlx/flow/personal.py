@@ -108,7 +108,7 @@ def for_mode(config, mode):
     return result
 
 
-def sandbox_command(argv, workspace, *, project):
+def sandbox_command(argv, workspace, *, project, live_source=None):
     """Deny-by-default OS policy inherited by any descendants; no network egress."""
     require_sandbox()
     workspace = workspace.resolve(strict=True)
@@ -116,10 +116,14 @@ def sandbox_command(argv, workspace, *, project):
     read_roots = {
         workspace,
         (project / ".venv").resolve(strict=True),
+        python.absolute().parent.parent.resolve(strict=True),
         python.resolve(strict=True).parent.parent,
         Path(__file__).resolve().parent,
-        Path("/System"),
-        Path("/usr"),
+        Path("/System/Library"),
+        Path("/System/Volumes/Preboot/Cryptexes/OS"),
+        Path("/System/Cryptexes"),
+        Path("/usr/lib"),
+        Path("/usr/share"),
         Path("/Library/Frameworks"),
         Path("/private/var/db/timezone"),
     }
@@ -127,6 +131,15 @@ def sandbox_command(argv, workspace, *, project):
     def quote(p):
         return json.dumps(str(p), ensure_ascii=False)
 
+    command = list(argv)
+    executables = {python, python.resolve()}
+    framework = python.resolve().parent.parent / "Resources/Python.app/Contents/MacOS/Python"
+    if framework.is_file():
+        # Framework launchers spawn Python.app. Execute it directly so fork stays
+        # denied; CPython's macOS launcher variable preserves the selected venv.
+        executables.update({framework, Path("/usr/bin/env")})
+        command = ["/usr/bin/env", f"__PYVENV_LAUNCHER__={python}", str(framework), *argv[1:]]
+    execute = " ".join(f"(literal {quote(p)})" for p in sorted(executables))
     reads = " ".join(f"(subpath {quote(p)})" for p in sorted(read_roots))
     port = int(argv[-1])
     if not 1 <= port <= 65535:
@@ -136,16 +149,21 @@ def sandbox_command(argv, workspace, *, project):
 (allow file-read-metadata)
 (allow file-read* {reads} (literal "/") (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random") (literal "/private/etc/localtime") (literal "/private/etc/apache2/mime.types"))
 (allow file-map-executable {reads})
+(allow file-read* file-map-executable {execute})
 (allow file-write* (subpath {quote(workspace)}) (literal {quote(workspace.parent / "preview.log")}) (literal "/dev/null"))
-(allow process-exec (literal {quote(python)}) (literal {quote(python.resolve())}))
+(allow process-exec {execute})
 (allow signal (target self))
 (allow sysctl-read)
 (allow network-bind (local ip "localhost:{port}"))
 (allow network-inbound (local ip "localhost:{port}"))
 """
+    if live_source is not None:
+        profile += (
+            f"(deny file-read* file-write* (subpath {quote(live_source.resolve(strict=True))}))\n"
+        )
     destination = workspace.parent / "personal.sb"
     atomic_write(destination, profile.encode())
-    return ["/usr/bin/sandbox-exec", "-f", str(destination), *argv]
+    return ["/usr/bin/sandbox-exec", "-f", str(destination), *command]
 
 
 def copy_asset(source, destination):

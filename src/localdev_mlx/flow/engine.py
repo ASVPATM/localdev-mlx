@@ -391,9 +391,14 @@ class Flow(Inspection):
                     seed=info.get("seed", 42),
                 )
                 if self.config.mode == "personal":
-                    from .personal import sandbox_command
+                    from .personal import sandbox_command, source_root
 
-                    command = sandbox_command(command, workspace, project=self.config.root)
+                    command = sandbox_command(
+                        command,
+                        workspace,
+                        project=self.config.root,
+                        live_source=source_root(self.config),
+                    )
                 self.preview_process = subprocess.Popen(
                     command,
                     cwd=workspace,

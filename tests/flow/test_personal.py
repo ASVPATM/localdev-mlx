@@ -204,6 +204,7 @@ def test_real_sandbox_denies_live_access_egress_and_child_processes(tmp_path):
     # These fixtures stand in for live storage, not the user's actual data.
     sentinel = tmp_path.resolve() / "live-data"
     sentinel.write_text("untouched")
+    (workspace / "escape").symlink_to(sentinel)
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen()
@@ -223,6 +224,9 @@ def denied(name, operation):
 live = pathlib.Path({str(sentinel)!r})
 denied('read', live.read_text)
 denied('write', lambda: live.write_text('damage'))
+denied('symlink', lambda: (root / 'escape').read_text())
+alias = pathlib.Path('/System/Volumes/Data' + str(live))
+denied('volume-alias', alias.read_text)
 denied('network', lambda: socket.create_connection(('127.0.0.1', {target_port}), timeout=1))
 denied('external', lambda: socket.create_connection(('1.1.1.1', 443), timeout=1))
 denied('fork', lambda: subprocess.run([sys.executable, '-c', 'pass'], check=True))
@@ -240,7 +244,15 @@ print(json.dumps(blocked))
             timeout=15,
         )
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == ["read", "write", "network", "external", "fork"]
+    assert json.loads(result.stdout) == [
+        "read",
+        "write",
+        "symlink",
+        "volume-alias",
+        "network",
+        "external",
+        "fork",
+    ]
     assert sentinel.read_text() == "untouched"
     assert (workspace / "allowed").read_text() == "ok"
 
