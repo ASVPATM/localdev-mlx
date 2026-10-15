@@ -4,8 +4,9 @@ import json
 import os
 import random
 import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from socketserver import ThreadingTCPServer
 
 scenario = os.environ.get("PROJECT_FLOW_SCENARIO", "small")
 rng = random.Random(int(os.environ.get("PROJECT_FLOW_SEED", "42")))
@@ -54,4 +55,5 @@ class Preview(BaseHTTPRequestHandler):
         self.reply(201, b'{"saved":true}', "application/json")
 
 
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Preview).serve_forever()
+# The sample serves a literal loopback address; it does not need reverse DNS.
+ThreadingTCPServer(("127.0.0.1", int(sys.argv[1])), Preview).serve_forever()

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import socket
+import threading
+from http.server import BaseHTTPRequestHandler
 
+import httpx
 import pytest
 
 from localdev_mlx.flow.config import Config
 from localdev_mlx.flow.engine import Flow
+from localdev_mlx.flow.web import LoopbackHTTPServer, create_servers
 from localdev_mlx.flow.workspace import apply_edits, changes, files, integrate, snapshot
 
 
@@ -16,6 +21,64 @@ def config(tmp_path):
     (root / "src/main.py").write_text("value = 1\n")
     (root / ".env").write_text("PRIVATE_CREDENTIAL=never-copy")
     return Config(root, checks=(("{python}", "-c", "import main; assert main.value == 2"),))
+
+
+def test_loopback_servers_start_without_hostname_lookup(tmp_path, monkeypatch):
+    def no_dns(*_):
+        raise AssertionError("Loopback startup must not depend on reverse DNS")
+
+    monkeypatch.setattr(socket, "getfqdn", no_dns)
+    flow = Flow(config(tmp_path))
+    servers = []
+    threads = []
+    try:
+        servers.extend(create_servers(flow, 0))
+        for server in servers:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            threads.append((server, thread))
+            assert server.server_name == "127.0.0.1"
+            assert server.server_port > 0
+        with httpx.Client(trust_env=False) as client:
+            response = client.get(f"http://127.0.0.1:{servers[0].server_port}/")
+            assert response.status_code == 200
+            assert "Project Flow" in response.text
+    finally:
+        for server, thread in threads:
+            server.shutdown()
+            thread.join(2)
+        for server in servers:
+            server.server_close()
+        flow.close()
+
+
+def test_loopback_server_rejects_public_bindings():
+    with pytest.raises(ValueError, match="loopback"):
+        LoopbackHTTPServer(("0.0.0.0", 0), BaseHTTPRequestHandler)
+
+
+def test_proxy_bind_failure_releases_dashboard_socket(tmp_path, monkeypatch):
+    from localdev_mlx.flow import web
+
+    opened = []
+
+    def bind(*args):
+        if opened:
+            raise OSError("Proxy bind failed")
+        server = LoopbackHTTPServer(*args)
+        opened.append(server)
+        return server
+
+    monkeypatch.setattr(web, "LoopbackHTTPServer", bind)
+    flow = Flow(config(tmp_path))
+    try:
+        with pytest.raises(OSError, match="Proxy bind failed"):
+            create_servers(flow, 0)
+        assert opened[0].socket.fileno() == -1
+    finally:
+        for server in opened:
+            server.server_close()
+        flow.close()
 
 
 def test_snapshot_is_git_independent_excludes_credentials_and_preserves_source(

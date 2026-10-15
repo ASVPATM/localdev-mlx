@@ -36,6 +36,7 @@ def main():
         help="Include recording Chromium tests (browser must already be explicitly installed).",
     )
     args = parser.parse_args()
+    test_options = ["-o", "addopts=", "-o", "faulthandler_timeout=15", "-q", "-ra"]
     root = Path(__file__).resolve().parent.parent
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
@@ -70,7 +71,7 @@ def main():
         )
         for command in (
             ["uv", "run", "--no-sync", "ruff", "check", "."],
-            ["uv", "run", "--no-sync", "pytest", "-o", "addopts=", "-q", "-ra"],
+            ["uv", "run", "--no-sync", "pytest", *test_options],
             ["uv", "run", "--no-sync", "python", "-m", "compileall", "-q", "src", "tests"],
             ["uv", "build", "--out-dir", temp / "dist"],
         ):
@@ -152,7 +153,7 @@ def main():
         ):
             run([cli, *command], cwd=temp, env=env)
         run(
-            [python, "-I", "-m", "pytest", "-o", "addopts=", "-q", "-ra", root / "tests"],
+            [python, "-I", "-m", "pytest", *test_options, root / "tests"],
             cwd=temp,
             env=env,
         )

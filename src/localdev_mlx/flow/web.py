@@ -10,6 +10,7 @@ from contextlib import suppress
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -18,6 +19,16 @@ from .workspace import atomic_write
 
 ASSETS = Path(__file__).parent
 MAX_BODY = 6 * 1024 * 1024
+
+
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer resolves its display name with getfqdn(), which can stall
+        # offline or on CI. This server only uses the literal loopback address.
+        if self.server_address[0] != "127.0.0.1":
+            raise ValueError("Flow servers must bind to IPv4 loopback")
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
 
 
 def create_servers(flow: Flow, port=43823):
@@ -451,8 +462,12 @@ def create_servers(flow: Flow, port=43823):
             except (ValueError, OSError, KeyError, TypeError) as exc:
                 self.reply(400, {"error": str(exc)[:1000]})
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    server = LoopbackHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        proxy = LoopbackHTTPServer(("127.0.0.1", 0), Proxy)
+    except BaseException:
+        server.server_close()
+        raise
     flow.proxy_url = f"http://127.0.0.1:{proxy.server_port}/"
     atomic_write(
         flow.config.data / "control.json",

@@ -217,7 +217,8 @@ def test_upload_rejects_active_content_and_symlink_exports(tmp_path):
         flow.close()
 
 
-DEMO = """from http.server import BaseHTTPRequestHandler, HTTPServer
+DEMO = """from http.server import BaseHTTPRequestHandler
+from socketserver import TCPServer
 from pathlib import Path
 import json, sys
 class App(BaseHTTPRequestHandler):
@@ -232,7 +233,7 @@ class App(BaseHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length",0)))
         assert "session=synthetic" in self.headers.get("Cookie","")
         self.send_response(200);self.send_header("Content-Type","application/json");self.end_headers();self.wfile.write(b'{"saved":true}')
-HTTPServer(("127.0.0.1",int(sys.argv[1])),App).serve_forever()
+TCPServer(("127.0.0.1",int(sys.argv[1])),App).serve_forever()
 """
 
 
