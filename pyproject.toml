@@ -31,6 +31,9 @@ dependencies = [
 [project.scripts]
 localdev-mlx = "localdev_mlx.cli:app"
 
+[project.optional-dependencies]
+flow-browser = ["playwright>=1.49,<2", "Pillow>=11,<13"]
+
 [dependency-groups]
 dev = [
   "pytest>=8,<10",
@@ -39,6 +42,12 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"localdev_mlx.flow" = ["*.html", "*.css", "*.js", "LICENSE", "VENDORED_SOURCE.json", "examples/web/*.toml", "examples/web/src/*.py", "examples/web/src/*.html", "examples/web/src/*.css", "examples/web/src/*.js", "examples/manual/*.toml"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["*.pyc", "__pycache__/*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "localdev_mlx.__version__"}

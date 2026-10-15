@@ -1,0 +1,11 @@
+[project]
+include = ["src"]
+checks = [["{python}", "-m", "compileall", "-q", "src"]]
+preview = [["{python}", "src/server.py", "{port}"]]
+preview_kind = "web"
+preview_mutations = true
+scenarios = ["empty", "small", "large"]
+supports_seed = true
+
+[model]
+name = ""

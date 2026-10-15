@@ -23,7 +23,7 @@ from localdev_mlx.workflows.task_runner import TaskRunner
 cli = CliRunner()
 
 
-def test_exactly_eight_public_commands_without_subgroups():
+def test_nine_public_commands_with_only_flow_group():
     commands = get_command(app).commands
     assert set(commands) == {
         "init",
@@ -34,8 +34,19 @@ def test_exactly_eight_public_commands_without_subgroups():
         "feature",
         "tweak",
         "session",
+        "flow",
     }
-    assert all(not hasattr(command, "commands") for command in commands.values())
+    assert all(
+        not hasattr(command, "commands") for name, command in commands.items() if name != "flow"
+    )
+    assert set(commands["flow"].commands) == {
+        "start",
+        "stop",
+        "status",
+        "doctor",
+        "init",
+        "browser-setup",
+    }
 
 
 def test_default_deferral_never_loads_config_models_or_changes_code(sample_repo, monkeypatch):
@@ -458,7 +469,7 @@ def test_init_and_planning_preserve_existing_checkout_branch(sample_repo):
     assert "Commit or push only when the user requests" in text
 
 
-def test_init_refuses_credential_snapshot(tmp_path):
+def test_init_skips_credential_snapshot_without_blocking_setup(tmp_path):
     root = tmp_path / "secret-project"
     root.mkdir()
     git = GitRepository._run
@@ -466,17 +477,19 @@ def test_init_refuses_credential_snapshot(tmp_path):
     git(root, ["config", "user.name", "Test User"])
     git(root, ["config", "user.email", "test@example.invalid"])
     (root / ".env").write_text("TOKEN=private\n")
-    with pytest.raises(RuntimeError, match="credential"):
-        initialize_project(root, commit=True)
+    notices = []
+    initialize_project(root, commit=True, notices=notices)
+    assert any("credential-like" in notice for notice in notices)
     assert not GitRepository(root).has_commits()
     assert (root / ".env").read_text() == "TOKEN=private\n"
+    assert (root / ".localdev/config.toml").is_file()
+    assert GitRepository._run(root, ["ls-files"]).stdout == ""
 
 
 def test_init_preserves_existing_user_changes(sample_repo):
     before = GitRepository(sample_repo).resolve_ref(sample_repo, "HEAD")
     (sample_repo / "README.md").write_text("User changes\n")
-    with pytest.raises(RuntimeError, match="unrelated"):
-        initialize_project(sample_repo, commit=True)
+    initialize_project(sample_repo, commit=True)
     assert (sample_repo / "README.md").read_text() == "User changes\n"
     assert GitRepository(sample_repo).resolve_ref(sample_repo, "HEAD") == before
 

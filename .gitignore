@@ -9,4 +9,6 @@ build/
 *.egg-info/
 # Local stabilization input, preserved outside release artifacts.
 /LOCALDEV_MLX_*_MASTER.md
+/LOCALDEV_MLX_FLOW_IMPLEMENTATION_HANDOFF.md
+/output/
 /docs/development/STABILIZATION_HANDOFF.md

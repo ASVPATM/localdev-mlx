@@ -17,8 +17,11 @@ T = TypeVar("T", bound=BaseModel)
 class MLXOpenAIProvider(StructuredProvider):
     """Call mlx_vlm.server through its OpenAI-compatible chat endpoint."""
 
-    def __init__(self, *, api_key: str = "local-not-required") -> None:
+    def __init__(
+        self, *, api_key: str = "local-not-required", max_response_bytes: int | None = None
+    ) -> None:
         self.api_key = api_key
+        self.max_response_bytes = max_response_bytes
         self.last_metadata: dict[str, Any] = {}
 
     def list_models(self, profile: ModelProfile) -> list[str]:
@@ -81,9 +84,21 @@ class MLXOpenAIProvider(StructuredProvider):
                     trust_env=False,
                 ) as client,
             ):
-                response = client.post("/chat/completions", json=payload)
-                response.raise_for_status()
-                body = response.json()
+                if self.max_response_bytes is None:
+                    response = client.post("/chat/completions", json=payload)
+                    response.raise_for_status()
+                    body = response.json()
+                else:
+                    with client.stream("POST", "/chat/completions", json=payload) as response:
+                        response.raise_for_status()
+                        raw = bytearray()
+                        for chunk in response.iter_bytes(chunk_size=8192):
+                            raw.extend(chunk)
+                            if len(raw) > self.max_response_bytes:
+                                raise ProviderError(
+                                    "MLX response exceeds the configured byte budget"
+                                )
+                        body = json.loads(raw)
                 self.last_metadata = {
                     "usage": body.get("usage", {}),
                     "finish_reason": body.get("choices", [{}])[0].get("finish_reason"),

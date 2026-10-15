@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.0 (unreleased)
+
+- Bundles sample-data Project Flow and adds separate opt-in Personal-data Flow for CanvasMaster on macOS: consistent database snapshots, copy-on-write assets, OS/browser isolation, no live write-back, and temporary-data cleanup on stop/refresh.
+- Adds recoverable **Clear all changes** beside **Clear all app parts**, with revision checks that preserve captures and exported handoffs.
+- Supports questions and shared-behavior scope in handoffs; retains credential/form masking while allowing personal-content captures in personal mode.
+- Keeps verified older Flow controllers controllable after upgrades. Includes the initialization, preview detection, shortcut and capture-label fixes listed below.
+
+## 0.5.1 (unreleased)
+
+- Initialization no longer blocks on credential-like templates, staged/uncommitted work or missing Git identity: it prepares metadata without automatic commits, preserving files and staging. Planning and Flow handoff linking also work before the first commit; credential protections and local-execution gates remain.
+- `init` adds lightweight Flow-build agent instructions once, preserves existing rules/overrides and ignores private captures. `init --print-agent-guidance` prints the block without changing files or Git; initialization still runs no models, previews or tests.
+- Detects PMT's existing synthetic-preview fixtures and plain HTML sites, with one-time launch confirmation. PMT previews reuse installed dependencies, isolate app data and credentials, and wait for sample seeding before opening.
+- Corrects misleading source-change warnings and missing-preview setup errors. Narrows PMT snapshots, preserves credential exclusions, and retains captures/test state when reopening or refreshing.
+- Fixes Option/Alt–Shift–I in modal form fields, including Mac composing keys. Inspector controls follow active dialogs, selection highlights its target and suppresses app pointer actions, and Escape cancels without dismissing the dialog.
+- Adds readable page/dialog/tab/element labels to capture cards and new handoffs, retaining selectors and routes. Existing captures remain unchanged and use available text as a fallback.
+
+## 0.5.0 (unreleased)
+
+- Bundles Project Flow's capture/composer UI, web/manual adapters, and portable evidence exports under `flow`, including non-Git folders and interactive shells. Owned background controllers preserve evidence across restarts; hosted editing routes are disabled.
+- Connects existing MLX profiles through a bounded, cancellable organizer worker with nonblocking leases, explicit offline-load consent, exact-input caching, and complete ordinary-export fallbacks.
+- Links immutable, validated evidence into canonical sessions with idempotent/retryable imports. Retains Python 3.11 support; browser/image dependencies are optional via `flow-browser`, with explicit Chromium setup.
+
 ## 0.4.1 (unreleased)
 
 - Full plans now ask adaptive clarification questions, preserve user answers, and produce more detailed end-to-end briefs without mandatory phases. Enter skips a question, `/done` finishes, and `--no-questions` bypasses clarification.

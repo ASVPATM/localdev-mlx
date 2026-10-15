@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Project Flow</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head>
+<body>
+<header>
+  <div class="project-heading"><strong>Project Flow <span id="project-name"></span></strong><button id="project" class="path" title="Copy project directory"></button></div>
+  <div id="model-status" class="model-status" role="status">Local helper · checking status</div>
+  <button data-action="shutdown" class="quiet">Stop server</button>
+</header>
+<main>
+  <h1>Select. Describe. Hand off.</h1>
+  <p id="flow-mode" class="hint" role="status"></p>
+  <p class="intro">Open your test app, select the relevant parts, and describe each change below.</p>
+  <div class="actions"><button data-action="open-test-app">Open test app</button><button data-action="inspect" class="secondary">Refresh to latest code</button></div>
+  <p id="preview-setup" class="hint"></p><p id="preview-status" role="status"></p><p id="stale" role="status"></p><p id="error" role="alert"></p>
+  <div id="draft-conflict" hidden><p>Your browser draft and the server have different changes. Back up your draft before choosing a version.</p><div class="actions"><button id="backup-draft" class="quiet">Download browser draft</button><button id="use-server-draft" class="quiet">Load server version</button><button id="use-browser-draft" class="quiet">Keep this browser’s version</button></div></div>
+  <details id="preview-options"><summary>Preview options</summary>
+    <p class="hint">These options apply when starting or refreshing the preview. Refresh creates fresh test data; saved captures and descriptions stay.</p>
+    <div class="toolbar">
+      <label id="source-field">Source<select id="source"><option value="current">Current project</option><option value="workspace">Editing workspace</option></select></label>
+      <label id="scenario-field">Sample scenario<select id="scenario"></select></label>
+      <label id="seed-field">Random seed<input id="seed" type="number" value="42" min="0" max="2147483647"><small>Same seed reproduces the same sample data.</small></label>
+      <label id="viewport-field">Browser size<select id="viewport"><option value="wide">Regular · 1440 × 900</option><option value="narrow">Narrow · 720 × 900</option></select></label>
+    </div>
+    <label id="narrow-field" class="check-row"><input type="checkbox" id="capture-narrow">Also capture a narrow view</label>
+    <p id="narrow-hint" class="hint">Optional: temporarily resizes the live test app during capture, which can change its state.</p>
+    <button data-action="stop-preview" class="quiet">Stop preview</button>
+  </details>
+  <section aria-labelledby="changes-heading">
+    <div class="section-heading"><h2 id="changes-heading">Changes</h2><span id="save-state" role="status"></span></div>
+    <div class="actions"><span id="capture-count" class="hint">0 app parts</span><button id="clear-captures" type="button" class="quiet" disabled>Clear all app parts</button><button id="clear-changes" type="button" class="quiet" disabled>Clear all changes</button></div>
+    <p id="capture-state" class="hint" role="status"></p>
+    <div id="issues"></div><button id="add-issue" class="secondary">Add another change</button>
+    <details id="manual-evidence"><summary>Attach evidence without browser selection</summary>
+      <p class="hint">For native/mobile screens, CLI output, or backend issues: add an optional source anchor, then attach a screenshot or log.</p>
+      <div class="toolbar"><label>File (project-relative)<input id="anchor-path" placeholder="Sources/Screen.swift"></label><label>Line<input id="anchor-line" type="number" min="1" value="1"></label></div>
+      <button id="add-anchor" class="quiet">Add evidence anchor</button>
+    </details>
+  </section>
+  <section class="export" aria-labelledby="export-heading">
+    <h2 id="export-heading">Export your changes</h2>
+    <label class="check-row"><input id="organize" type="checkbox" checked>Organize with the local helper when available</label>
+    <p id="organize-hint" class="hint">Original descriptions and evidence are always preserved.</p>
+    <div class="actions"><label>Evidence<select id="level"><option value="standard">Standard</option><option value="light">Light</option><option value="full">Full</option></select></label><button id="export-handoff">Export Markdown handoff</button><button id="export-bundle" class="secondary">Evidence ZIP</button></div>
+    <div id="export-progress" hidden><ol class="stages"><li data-stage="collecting">Collecting</li><li data-stage="organizing">Organizing locally</li><li data-stage="checking">Checking completeness</li><li data-stage="ready">Ready</li></ol><p id="export-status" role="status"></p><button id="skip-organization" class="quiet">Export without local organization</button><button id="download-again" class="quiet" hidden>Download again</button></div>
+    <p id="session-link" class="hint" role="status"></p><button id="retry-session-link" class="quiet" hidden>Retry session link</button>
+    <p class="hint">Standard keeps the handoff compact; Full expands diagnostic text. ZIP includes the evidence files for another workspace. Nothing is uploaded.</p>
+  </section>
+  <details class="advanced" id="editing-tools"><summary>Optional isolated editing</summary><p class="hint">Separate from issue collection. The original source is changed only after explicit review.</p>
+    <label for="request">Implementation request</label><textarea id="request" rows="3" maxlength="20000"></textarea><button data-action="begin">Prepare workspace</button>
+    <div class="actions"><button data-action="approve-plan">Approve plan / edit</button><button data-action="check">Run checks</button><button data-action="accept">Review &amp; apply</button><button data-action="reject">Cancel / reject</button></div>
+    <span id="status"></span><p id="message"></p><pre id="plan"></pre><p id="workspace"></p><details><summary>Retrieved context</summary><pre id="evidence"></pre></details><div id="checks"></div><p id="risk"></p><pre id="diff"></pre>
+  </details>
+</main>
+<dialog id="evidence-dialog"><div class="section-heading"><h2 id="evidence-title">Captured evidence</h2><button id="close-evidence" class="quiet">Close</button></div><p id="evidence-location" class="part-location"></p><p id="evidence-summary"></p><img id="evidence-image" alt="Captured screenshot"><div id="evidence-files" class="actions"></div><div class="actions"><button id="attach" class="secondary">Attach screenshot/log</button><button id="locate" class="quiet">Locate in test app</button><button id="replay" class="quiet">Replay</button><button id="remove-capture" class="quiet">Remove capture</button></div><input id="attachment" type="file" accept=".png,.jpg,.jpeg,.txt,.log,.json" hidden><details><summary>Diagnostic facts</summary><pre id="evidence-facts"></pre></details><p id="evidence-privacy" class="hint"></p></dialog>
+</body></html>

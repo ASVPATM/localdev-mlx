@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+from contextlib import nullcontext
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
@@ -14,11 +15,12 @@ from rich.console import Console
 from localdev_mlx import __version__
 from localdev_mlx.config import load_global_config, write_global_config
 from localdev_mlx.diagnostics import installation_identity
-from localdev_mlx.git import GitRepository
+from localdev_mlx.flow.commands import app as flow_app
+from localdev_mlx.git import GitError, GitRepository
 from localdev_mlx.models import ModelManager
 from localdev_mlx.models.capabilities import probe_capabilities
 from localdev_mlx.progress import ProgressReporter
-from localdev_mlx.project import initialize_project
+from localdev_mlx.project import FLOW_AGENT_GUIDANCE, initialize_project
 from localdev_mlx.providers import MLXOpenAIProvider
 from localdev_mlx.schemas import TaskKind, TaskStatus
 from localdev_mlx.sessions import SessionStore
@@ -33,6 +35,7 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+app.add_typer(flow_app, name="flow")
 _current_repo: ContextVar[Path] = ContextVar("localdev_repository", default=Path("."))
 _interactive_store: ContextVar[SessionStore | None] = ContextVar("localdev_shell", default=None)
 
@@ -86,18 +89,29 @@ def root_callback(
     if ctx.invoked_subcommand is not None:
         return
     try:
-        store = SessionStore(repo)
-        with store.shell():
-            session = store.start(new=True)
+        project = repo.resolve(strict=True)
+        try:
+            store = SessionStore(project) if (project / ".localdev/config.toml").is_file() else None
+        except GitError:
+            store = None  # A copied/non-Git folder still supports the capture shell.
+        with store.shell() if store else nullcontext():
+            session = store.start(new=True) if store else None
             shell_token = _interactive_store.set(store)
-            _show_session(store, session)
+            if store:
+                _show_session(store, session)
+            else:
+                console.print(
+                    "Capture-only shell: flow works here without Git. Use init only when you want a LocalDev coding session."
+                )
             console.print(
-                "Enter plan, bug, feature, tweak, or session; --help lists all eight commands. Ctrl-D ends the session. No shell commands are executed."
+                "Enter plan, bug, feature, tweak, session, or flow; --help lists all nine commands. Ctrl-D ends the shell. Flow stays open; use flow stop to close it. No shell commands are executed."
             )
             try:
                 while True:
                     try:
-                        line = input(f"localdev:{session['number']:04d}> ").strip()
+                        line = input(
+                            f"localdev:{session['number']:04d}> " if session else "localdev> "
+                        ).strip()
                     except EOFError:
                         break
                     except KeyboardInterrupt:
@@ -111,9 +125,11 @@ def root_callback(
                             args = args[1:]
                         if not args:
                             continue
-                        app(args=["--repo", str(store.repository), *args], standalone_mode=False)
-                        session = store.current()
-                        if session["ended"]:
+                        if not args or args[0].startswith("--repo"):
+                            raise ValueError("Use a command within the current project")
+                        app(args=["--repo", str(project), *args], standalone_mode=False)
+                        session = store.current() if store else None
+                        if session and session["ended"]:
                             break
                     except (typer.Exit, KeyboardInterrupt):
                         console.print("Operation stopped; its evidence remains in the handoff.")
@@ -121,7 +137,8 @@ def root_callback(
                         console.print(str(exc), style="red", markup=False)
             finally:
                 _interactive_store.reset(shell_token)
-                _show_session(store, store.end())
+                if store:
+                    _show_session(store, store.end())
     except Exception as exc:
         _error(exc)
 
@@ -129,7 +146,8 @@ def root_callback(
 @app.command("init")
 def init_project(
     repository: Annotated[
-        Path | None, typer.Argument(help="New directory or clean Git project.")
+        Path | None,
+        typer.Argument(help="New directory or existing project; preserve user changes."),
     ] = None,
     quick_test: Annotated[
         list[str] | None, typer.Option("--quick-test", help="Quick test command; repeatable.")
@@ -144,8 +162,18 @@ def init_project(
     test_env: Annotated[
         list[str] | None, typer.Option("--test-env", help="Test variable KEY=VALUE; repeatable.")
     ] = None,
+    print_agent_guidance: Annotated[
+        bool,
+        typer.Option(
+            "--print-agent-guidance",
+            help="Print the Flow build instructions for manual copying; change nothing.",
+        ),
+    ] = False,
 ) -> None:
-    """Create Git/initial commit if needed, commit minimal setup, and prepare for sessions."""
+    """Prepare settings and agent guidance; commit only when safe. Flow needs no init."""
+    if print_agent_guidance:
+        typer.echo(FLOW_AGENT_GUIDANCE, nl=False)
+        return
     try:
         environment = {}
         for value in test_env or []:
@@ -153,6 +181,7 @@ def init_project(
             if not key.strip() or not separator:
                 raise ValueError("--test-env requires KEY=VALUE")
             environment[key.strip()] = text
+        notices: list[str] = []
         root, changed = initialize_project(
             _repo(repository),
             quick_tests=quick_test,
@@ -161,11 +190,19 @@ def init_project(
             prepare_commands=prepare,
             commit=True,
             switch_integration=False,
+            notices=notices,
         )
         console.print(
-            f"{'Prepared' if changed else 'Already initialized'}: {root}\nBranch: {GitRepository(root).current_branch()}\nRun localdev-mlx to open a session. No models or tests were run.",
+            f"{'Prepared' if changed else 'Already initialized'}: {root}\nBranch: {GitRepository(root).current_branch()}\nAgent instructions include Flow-ready build guidance; the app's preview still needs validation.\nRun localdev-mlx to open a session. No models, previews or tests were run.",
             markup=False,
         )
+        for notice in notices:
+            console.print(notice, markup=False)
+        if notices:
+            console.print(
+                "Setup succeeded. Flow, planning and handoffs are available; --local still requires a clean, committed checkout.",
+                markup=False,
+            )
     except Exception as exc:
         _error(exc)
 

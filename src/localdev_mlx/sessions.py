@@ -119,7 +119,7 @@ class SessionStore:
         git = GitRepository(self.repository)
         return {
             "branch": git.current_branch() or "detached HEAD",
-            "commit": git.resolve_ref(git.root, "HEAD"),
+            "commit": git.resolve_ref(git.root, "HEAD") if git.has_commits() else None,
             # File status only: never capture a user's uncommitted file contents.
             "dirty": git.status_porcelain(git.root).strip(),
         }
@@ -153,6 +153,29 @@ class SessionStore:
         if target.is_symlink():
             raise ValueError("Refusing a symlinked session handoff")
         _atomic(target, self.render(session))
+
+    def record_flow_evidence(self, evidence: dict) -> tuple[dict, bool]:
+        """Caller holds _lock; all bundle I/O and model work has already finished."""
+        session = self._start()
+        for existing in session["entries"]:
+            if existing.get("flow_evidence", {}).get("bundle_digest") == evidence["bundle_digest"]:
+                self.save(session)  # Repair derived Markdown after an interrupted prior save.
+                return session, True
+        session["entries"].append(
+            {
+                "number": len(session["entries"]) + 1,
+                "kind": "flow",
+                "mode": "defer",
+                "state": "deferred",
+                "description": f"Flow evidence: {len(evidence['manifest']['issues'])} change request(s)",
+                "started": _now(),
+                "finished": _now(),
+                "before": self.snapshot(),
+                "flow_evidence": evidence,
+            }
+        )
+        self.save(session)
+        return session, False
 
     def _recover(self, session: dict) -> None:
         changed = False
@@ -323,7 +346,7 @@ class SessionStore:
             f"# Session {session['number']:04d} — external handoff",
             "",
             f"Started: {session['started']} | Ended: {session['ended'] or 'open'}",
-            f"Starting branch/commit: `{baseline['branch']}` / `{baseline['commit']}`",
+            f"Starting branch/commit: `{baseline['branch']}` / `{baseline['commit'] or 'no commits yet'}`",
             "",
             "## Read this first",
             "",
@@ -351,7 +374,7 @@ class SessionStore:
                 "",
                 _quote(entry["description"]),
                 "",
-                f"Observed at `{entry['before']['commit']}` on `{entry['before']['branch']}`.",
+                f"Observed at `{entry['before']['commit'] or 'no commits yet'}` on `{entry['before']['branch']}`.",
             ]
             if entry["before"]["dirty"]:
                 lines += [
@@ -370,6 +393,17 @@ class SessionStore:
                             + (item["answer"] or "Unanswered — do not infer a confirmed choice.")
                         ),
                     ]
+            if entry.get("flow_evidence"):
+                evidence = entry["flow_evidence"]
+                lines += [
+                    f"Evidence revision {evidence['issues_revision']} · `{evidence['bundle_digest']}`.",
+                    f"[Compact evidence handoff](<{evidence['markdown']}>) · [Portable ZIP](<{evidence['zip']}>)",
+                    "Original requests (stable IDs, original order; advice is separate in the evidence handoff):",
+                ]
+                for issue in evidence["manifest"]["issues"]:
+                    lines.append(_quote(f"{issue['id']}: {issue['prompt']}"))
+                for warning in evidence["warnings"]:
+                    lines.append(_quote("Evidence warning: " + warning))
             if entry.get("clarification_note"):
                 lines.append("Clarification: " + entry["clarification_note"])
             if entry.get("proposal"):

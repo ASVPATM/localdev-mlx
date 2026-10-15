@@ -1,0 +1,13 @@
+# Review before running: commands have your OS privileges, not a VM sandbox.
+[project]
+include = ["src", "tests", "scripts", "README.md", "pyproject.toml", "package.json"]
+preview_kind = "command"
+preview = [] # Optional: [["{python}", "scripts/synthetic_check.py"]]
+preview_mutations = false
+scenarios = ["default"]
+supports_seed = false
+capture_narrow = false
+
+[model]
+# LocalDev uses its existing worker/resident profiles; no model endpoint here.
+organizer_timeout = 20

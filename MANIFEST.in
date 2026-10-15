@@ -9,3 +9,4 @@ include uv.lock
 exclude docs/development/STABILIZATION_HANDOFF.md
 recursive-include tests *.py
 recursive-include .github *.yml
+global-exclude *.py[cod]

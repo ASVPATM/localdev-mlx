@@ -1,0 +1,32 @@
+{
+  "source": "Project Flow",
+  "version": "0.3.0",
+  "sha256": {
+    "src/project_flow/__init__.py": "bcbd4de5a6ab5b4de6685a0de4d13ec4c9efaaf0f0c6b486c1f44675703cae72",
+    "src/project_flow/__main__.py": "557820d765f21e3be2a2a18d7ddf835313b226d25b6fb35991e372bc7c5ba04b",
+    "src/project_flow/app.js": "124d60ce2b57e1bf4f3ba14d71a2029e987f89c80e25d503bd30c011d79fdff9",
+    "src/project_flow/config.py": "5c9385f91325975618dd87a4227f3cf2ebb71802cbd62097f86bf106be5c26cf",
+    "src/project_flow/dashboard.html": "d938ea63373fee36c97e93f12d6a546a3f6a4a0b37401d9d69551b2e000a6f9c",
+    "src/project_flow/engine.py": "eac7ff41afc2e1d6a421b3f7efcef29d5d98a6c6dd80c24f368b0ddeabc7d1f1",
+    "src/project_flow/evidence.py": "fce7ee975de3639276546e6daa9b163fb45c02b3090372b4a0f36089fdbccc71",
+    "src/project_flow/host.py": "d6e398e999673b9b51252d6648bed6221e2088d8e4c2d228ddc6f26dc0673df4",
+    "src/project_flow/inspection.py": "26e41647ca4e7db4ca974788b756b8be40fc9d6bfd36aa7541020feb3a5a57e3",
+    "src/project_flow/inspector.js": "c176b6ef640bd009cdf42184dde7424eddb55b7bdadd64af26029a73aa7d585e",
+    "src/project_flow/locator.py": "ded9187a200247300074ae4edfccca5d0a23beb3281676bd7dbd19e93140c252",
+    "src/project_flow/memory.py": "3e4735e2b481ea6656e78a019b70876c7a2ecc5c48dc7535441cb7c20d8c1708",
+    "src/project_flow/organization.py": "8c7bb37b8cddaa1cabc0ae3d5601f1bfd23f32cdc4dd5229e69c5a3030518126",
+    "src/project_flow/style.css": "431d603ca3561c2866b2abb3a94cb7cca4256e951c3c80476f21e1c05d5c4781",
+    "src/project_flow/web.py": "3fb69956bf14b70e58a7bac5e725ae216fb2c2462e95bc362fb9572e25653299",
+    "src/project_flow/workspace.py": "ab5c7b6f256b83f7973a079f093262324369b800674d98377a0650eea2a5029d",
+    "tests/test_composer.py": "f61f304c16e26d4acac52846bf1f92815d96a5efd370564e69a9f39cd45e5226",
+    "tests/test_evidence.py": "1932d5652b87aae3f562cd5aede01810effd90a66084aeeb91f63f9f5571b0c3",
+    "tests/test_flow.py": "9b0fcfc1700b46f272184383499adb440478bbd26829ddd39fdd325e917c7ab9",
+    "tests/test_organization.py": "f03a58b04172982fbc788e15c43e03a90a764008697047471747a4ac34903b8c",
+    "examples/web/project-flow.toml": "ef2209720ed099ddd8e20e79b21f6daae5864248ddef83da72c1d56c60b265c5",
+    "examples/web/src/app.js": "9150012c86e9a8109eb9ef0780ef3efb2ca343bd1b175896fdaf4b39d43facda",
+    "examples/web/src/style.css": "5167c243bfb55c4a0d49d5e194b9c61e519ffe1f56e708a913279e81b71dd9af",
+    "examples/web/src/index.html": "8d60d0ef904e409b64cf24e5417d27f1fd63f34828f5f6471219f351a3e7ce3f",
+    "examples/web/src/server.py": "2fc92e6edf649ae7ee1c4d5f399ac0527fc9926212bb0f35ea7dec69fb22d505",
+    "LICENSE": "9d1946b3d7cc17e335a72ceb2079ecb58e80911b699554c81f58b853646f2590"
+  }
+}

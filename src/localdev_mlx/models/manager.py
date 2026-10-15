@@ -130,6 +130,7 @@ class ModelManager:
             response = httpx.get(
                 f"http://{profile.host}:{profile.port}/v1/models",
                 timeout=5,
+                trust_env=False,
             )
             response.raise_for_status()
             body = response.json()
