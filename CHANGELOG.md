@@ -2,10 +2,10 @@
 
 ## 0.6.0 (unreleased)
 
-- Bundles sample-data Project Flow and adds separate opt-in Personal-data Flow for CanvasMaster on macOS: consistent database snapshots, copy-on-write assets, OS/browser isolation, no live write-back, and temporary-data cleanup on stop/refresh.
-- Adds recoverable **Clear all changes** beside **Clear all app parts**, with revision checks that preserve captures and exported handoffs.
-- Supports questions and shared-behavior scope in handoffs; retains credential/form masking while allowing personal-content captures in personal mode.
-- Keeps verified older Flow controllers controllable after upgrades. Includes the initialization, preview detection, shortcut and capture-label fixes listed below.
+- Adds Personal-data Flow for CanvasMaster on macOS: an isolated offline copy, separate captures, and no live-data write-back.
+- Adds **Clear all changes** beside **Clear all app parts**. Exported handoffs are kept.
+- Adds questions and shared-behavior checks to handoffs.
+- Keeps existing Flow servers controllable after upgrades. Setup and preview fixes are listed below.
 
 ## 0.5.1 (unreleased)
 
