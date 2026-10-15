@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 from dataclasses import replace
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
@@ -18,6 +18,7 @@ from localdev_mlx.flow import controller, personal
 from localdev_mlx.flow.config import Config, load_config
 from localdev_mlx.flow.engine import Flow
 from localdev_mlx.flow.evidence import BrowserRecorder
+from localdev_mlx.flow.web import LoopbackHTTPServer
 
 
 @pytest.fixture
@@ -322,7 +323,7 @@ def test_browser_offline_boundary_and_personal_text_masking(tmp_path, mode):
             self.end_headers()
             self.wfile.write(body.encode())
 
-    servers = [ThreadingHTTPServer(("127.0.0.1", 0), App) for _ in range(2)]
+    servers = [LoopbackHTTPServer(("127.0.0.1", 0), App) for _ in range(2)]
     for server in servers:
         threading.Thread(target=server.serve_forever, daemon=True).start()
     browser = BrowserRecorder(headless=True)

@@ -20,6 +20,42 @@ def run(args, *, cwd, env):
     subprocess.run(list(map(str, args)), cwd=cwd, env=env, check=True)
 
 
+def install_wheel(wheel, python, constraints, *, cwd, env, flow_browser):
+    # Test the artifact against the same dependency versions as the source.
+    # In particular, Playwright must match the explicitly downloaded Chromium.
+    run(
+        [
+            "uv",
+            "export",
+            "--locked",
+            "--group",
+            "dev",
+            "--no-emit-project",
+            "--no-hashes",
+            *(["--extra", "flow-browser"] if flow_browser else []),
+            "--output-file",
+            constraints,
+        ],
+        cwd=cwd,
+        env=env,
+    )
+    run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            python,
+            "--constraint",
+            constraints,
+            str(wheel) + ("[flow-browser]" if flow_browser else ""),
+            "pytest>=8,<10",
+        ],
+        cwd=cwd,
+        env=env,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -114,18 +150,13 @@ def main():
         python = temp / "wheel-env/bin/python"
         cli = temp / "wheel-env/bin/localdev-mlx"
         env["PATH"] = str(cli.parent) + os.pathsep + env.get("PATH", "")
-        run(
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                python,
-                str(wheel) + ("[flow-browser]" if args.flow_browser else ""),
-                "pytest>=8,<10",
-            ],
+        install_wheel(
+            wheel,
+            python,
+            temp / "wheel-constraints.txt",
             cwd=root,
             env=env,
+            flow_browser=args.flow_browser,
         )
         identity = subprocess.check_output(
             [
