@@ -11,6 +11,7 @@ import io
 import json
 import queue
 import re
+import sys
 import threading
 import time
 from collections import deque
@@ -21,6 +22,20 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 SECRET = re.compile(r"(?i)(password|passwd|secret|token|api[_ -]?key|authorization|cookie)")
+
+
+def launch_evidence_browser(playwright, *, headless=False):
+    """Reuse installed Chrome on macOS when a bundled Chromium is absent."""
+    options = {"headless": headless}
+    if sys.platform == "darwin" and not Path(playwright.chromium.executable_path).is_file():
+        chrome = "Google Chrome.app/Contents/MacOS/Google Chrome"
+        if any(
+            (root / chrome).is_file()
+            for root in (Path("/Applications"), Path.home() / "Applications")
+        ):
+            options["channel"] = "chrome"
+    # A fresh Playwright context, never the user's browser profile. No downloads.
+    return playwright.chromium.launch(**options)
 
 
 def clean(value, limit=1000):
@@ -347,7 +362,7 @@ class BrowserRecorder:
                             reply.put(True)
                             continue  # No navigation, log reset, viewport reset or lost test state.
                         if not browser or not browser.is_connected():
-                            browser = playwright.chromium.launch(headless=self.headless)
+                            browser = launch_evidence_browser(playwright, headless=self.headless)
                             if self.started:
                                 self.started()
                             context = browser.new_context(

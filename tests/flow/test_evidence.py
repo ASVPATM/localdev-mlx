@@ -8,13 +8,36 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from localdev_mlx.flow import evidence
 from localdev_mlx.flow.config import Config
 from localdev_mlx.flow.engine import Flow
 from localdev_mlx.flow.evidence import BrowserRecorder, clean, replay_draft, sanitized
 from localdev_mlx.flow.web import create_servers
+
+
+@pytest.mark.parametrize("bundled,chrome", [(True, True), (False, True), (False, False)])
+def test_browser_uses_installed_chrome_without_downloads(monkeypatch, bundled, chrome):
+    calls = []
+    monkeypatch.setattr(evidence.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: bundled if str(path) == "/bundled/chromium" else chrome,
+    )
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(
+            executable_path="/bundled/chromium", launch=lambda **options: calls.append(options)
+        )
+    )
+    evidence.launch_evidence_browser(playwright, headless=True)
+    expected = {"headless": True}
+    if chrome and not bundled:
+        expected["channel"] = "chrome"
+    assert calls == [expected]
 
 
 def config(tmp_path, **kwargs):
