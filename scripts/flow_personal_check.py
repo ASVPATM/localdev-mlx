@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--project", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--real-data", required=True, action="store_true")
+    parser.add_argument("--route", default="/", help="Optional deep route in the copied app")
     args = parser.parse_args()
     original = args.project.resolve(strict=True)
     config = for_mode(configuration(original), "personal")
@@ -36,7 +37,12 @@ def main():
         target = project / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(original / name, target)
-    (project / ".venv").symlink_to(original / ".venv", target_is_directory=True)
+    # Adapter dependencies may live below the project root; only reuse that venv.
+    venv = Path(config.personal_python).parent.parent
+    (project / venv).parent.mkdir(parents=True, exist_ok=True)
+    (project / venv).symlink_to(original / venv, target_is_directory=True)
+    if not (project / "project-flow.toml").is_file():
+        shutil.copy2(original / "project-flow.toml", project / "project-flow.toml")
     config = for_mode(configuration(project), "personal")
     flow = Flow(
         config, host=HostServices("Personal validation", lambda: {"state": "not_configured"})
@@ -67,9 +73,10 @@ def main():
             expect(page.locator("aside[data-project-flow-overlay]")).to_be_visible()
             assert "Personal copy" in page.locator("aside[data-project-flow-overlay]").inner_text()
             # A deep route verifies reinjection and the shortcut outside the landing page.
-            links = page.locator("a[href^='/courses/']")
-            if links.count():
-                response = page.goto(flow.proxy_url.rstrip("/") + links.first.get_attribute("href"))
+            if args.route != "/":
+                if not args.route.startswith("/") or args.route.startswith("//"):
+                    raise ValueError("Route must be a local path")
+                response = page.goto(flow.proxy_url.rstrip("/") + args.route)
                 assert response.status == 200
                 page.wait_for_load_state("domcontentloaded")
             heading = page.locator("h1:visible, h2:visible").first

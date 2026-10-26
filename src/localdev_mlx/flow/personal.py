@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from dataclasses import replace
@@ -66,9 +67,9 @@ def source_root(config):
         or source.is_relative_to(config.root / ".project-flow")
     ):
         raise ValueError("Choose the specific live app data directory, separate from Flow evidence")
-    database = safe_path(source, "app.sqlite3")
+    database = safe_path(source, config.personal_database)
     if not database.is_file():
-        raise ValueError("CanvasMaster personal data needs an existing app.sqlite3")
+        raise ValueError("Personal data needs the configured existing SQLite database")
     return source
 
 
@@ -78,14 +79,44 @@ def for_mode(config, mode):
     if mode != "personal":
         raise ValueError("Unknown Flow mode")
     require_sandbox()
-    if config.personal_adapter != "canvasmaster":
+    if config.personal_adapter != "sqlite":
         raise ValueError(
-            "Personal-data Flow currently supports the CanvasMaster adapter only. "
-            'Set [personal] adapter = "canvasmaster" and source in project-flow.toml.'
+            'Personal-data Flow needs [personal] adapter = "sqlite", source, database '
+            "and an offline entrypoint in project-flow.toml."
         )
-    if not (config.root / "src/canvas_optimizer/web.py").is_file():
-        raise ValueError("The CanvasMaster adapter requires src/canvas_optimizer/web.py")
-    if not (config.root / ".venv/bin/python").is_file():
+    for name in (config.personal_database, *config.personal_assets):
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name)
+            or re.search(
+                r"credential|secret|token|password|browser|runtime|backup|config|^\.env", name, re.I
+            )
+        ):
+            raise ValueError(
+                "Personal database/assets must be explicit safe names, without credentials or runtime"
+            )
+    if not config.personal_database.endswith((".sqlite3", ".sqlite", ".db")):
+        raise ValueError("Personal database must name a SQLite file")
+    if config.personal_database in config.personal_assets:
+        raise ValueError("Database cannot also be an asset directory")
+    entrypoint = config.personal_entrypoint
+    if not entrypoint.endswith(".py") or not config.allows(entrypoint):
+        raise ValueError(
+            "Personal entrypoint must be a Python source file included in the copied project"
+        )
+    if not safe_path(config.root, entrypoint).is_file():
+        raise ValueError("Personal offline entrypoint does not exist")
+    python = Path(config.personal_python)
+    if (
+        python.is_absolute()
+        or ".." in python.parts
+        or "\\" in config.personal_python
+        or python.name != "python"
+        or python.parent.name != "bin"
+        or python.parent.parent.name != ".venv"
+    ):
+        raise ValueError("Personal Python must name this project's .venv/bin/python")
+    if not (config.root / python).is_file():
         raise ValueError("Install this project's Python dependencies before using personal Flow")
     result = replace(
         config,
@@ -98,7 +129,7 @@ def for_mode(config, mode):
         "form-action 'self'; frame-ancestors 'none'",
         preview_timeout=120,
         preview_ready_file="",
-        adapter_name="CanvasMaster personal-data snapshot",
+        adapter_name="SQLite personal-data snapshot",
         autodetected=False,
         supports_seed=False,
         scenarios=("personal snapshot",),
@@ -108,6 +139,51 @@ def for_mode(config, mode):
     return result
 
 
+def runtime_read_roots(python):
+    """Inspect Mach-O dependencies without executing the project's interpreter.
+
+    A venv can contain a copied framework launcher, not a symlink. Its framework
+    and Homebrew extension dependencies then live outside the venv directory.
+    Only installed runtime/library paths are added; no project code is imported.
+    """
+    roots = {
+        python.absolute().parent.parent.resolve(strict=True),
+        python.resolve(strict=True).parent.parent,
+    }
+    trusted = ("/opt/homebrew/", "/usr/local/Cellar/", "/usr/local/opt/", "/Library/Frameworks/")
+    pending = [python.resolve(strict=True)]
+    inspected = set()
+    for _ in range(4):
+        targets = [p for p in pending if p not in inspected][:512]
+        if not targets:
+            break
+        inspected.update(targets)
+        output = subprocess.run(
+            ["/usr/bin/otool", "-L", *map(str, targets)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        pending = []
+        for line in output.stdout.splitlines():
+            dependency = line.strip().split(" (compatibility version", 1)[0]
+            if not dependency.startswith(trusted) or not (
+                dependency.endswith(".dylib") or dependency.endswith("/Python")
+            ):
+                continue
+            path = Path(dependency)
+            if not path.is_file():
+                continue
+            roots.update((path, path.resolve()))
+            pending.append(path.resolve())
+            if "/Python.framework/Versions/" in dependency and dependency.endswith("/Python"):
+                prefix = path.resolve().parent
+                roots.add(prefix)
+                pending.extend(list(prefix.glob("lib/python*/lib-dynload/*.so"))[:256])
+    return roots
+
+
 def sandbox_command(argv, workspace, *, project, live_source=None):
     """Deny-by-default OS policy inherited by any descendants; no network egress."""
     require_sandbox()
@@ -115,9 +191,7 @@ def sandbox_command(argv, workspace, *, project, live_source=None):
     python = Path(argv[0])
     read_roots = {
         workspace,
-        (project / ".venv").resolve(strict=True),
-        python.absolute().parent.parent.resolve(strict=True),
-        python.resolve(strict=True).parent.parent,
+        *runtime_read_roots(python),
         Path(__file__).resolve().parent,
         Path("/System/Library"),
         Path("/System/Volumes/Preboot/Cryptexes/OS"),
@@ -134,6 +208,15 @@ def sandbox_command(argv, workspace, *, project, live_source=None):
     command = list(argv)
     executables = {python, python.resolve()}
     framework = python.resolve().parent.parent / "Resources/Python.app/Contents/MacOS/Python"
+    if not framework.is_file():
+        framework = next(
+            (
+                root / "Resources/Python.app/Contents/MacOS/Python"
+                for root in read_roots
+                if (root / "Resources/Python.app/Contents/MacOS/Python").is_file()
+            ),
+            framework,
+        )
     if framework.is_file():
         # Framework launchers spawn Python.app. Execute it directly so fork stays
         # denied; CPython's macOS launcher variable preserves the selected venv.
@@ -197,7 +280,7 @@ def prepare_snapshot(config, workspace, cancelled, progress=lambda _: None):
             raise ValueError("Personal snapshot exceeded ten minutes; no preview was started")
 
     check()
-    database = safe_path(source, "app.sqlite3")
+    database = safe_path(source, config.personal_database)
     total = database.stat().st_size
     if total > MAX_SNAPSHOT_BYTES or shutil.disk_usage(workspace).free < total + 256 * 1024**2:
         raise ValueError("Insufficient snapshot space (or data exceeds the 20 GB limit)")
@@ -205,7 +288,7 @@ def prepare_snapshot(config, workspace, cancelled, progress=lambda _: None):
     with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5) as live:
         live.execute("PRAGMA query_only=ON")
         page_bytes = live.execute("PRAGMA page_size").fetchone()[0]
-        with sqlite3.connect(target / "app.sqlite3") as snapshot:
+        with sqlite3.connect(target / config.personal_database) as snapshot:
 
             def backup_progress(status, remaining, pages):
                 check()
@@ -215,12 +298,12 @@ def prepare_snapshot(config, workspace, cancelled, progress=lambda _: None):
             live.backup(snapshot, pages=256, progress=backup_progress, sleep=0.05)
             if snapshot.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise ValueError("Personal database snapshot failed integrity verification")
-    (target / "app.sqlite3").chmod(0o600)
-    total = (target / "app.sqlite3").stat().st_size
+    (target / config.personal_database).chmod(0o600)
+    total = (target / config.personal_database).stat().st_size
     planned = []
     # Enumerate after the database snapshot, so newly referenced assets are not missed.
     # No credentials, browser profiles, configuration, runtime, logs or old backups.
-    for folder in ("objects", "artifacts", "meeting-artifacts"):
+    for folder in config.personal_assets:
         top = safe_path(source, folder)
         if not top.exists():
             continue
@@ -228,6 +311,17 @@ def prepare_snapshot(config, workspace, cancelled, progress=lambda _: None):
             check()
             relative = path.relative_to(source).as_posix()
             safe_path(source, relative)
+            if any(
+                re.search(
+                    r"credential|secret|token|password|^\.env(?:\.|$)|\.(?:pem|key|p12|pfx)$",
+                    part,
+                    re.I,
+                )
+                for part in path.relative_to(source).parts
+            ):
+                raise ValueError(
+                    "Personal assets include a credential-like filename; narrow the asset selection"
+                )
             if not path.is_file():
                 if not path.is_dir():
                     raise ValueError("Personal snapshot contains a non-regular asset")
@@ -254,7 +348,8 @@ def prepare_snapshot(config, workspace, cancelled, progress=lambda _: None):
         (target / relative).chmod(0o600)
     record = {
         "mode": "personal",
-        "adapter": "canvasmaster",
+        "adapter": "sqlite",
+        "database": config.personal_database,
         "captured_at": datetime.now(UTC).isoformat(),
         "logical_bytes": total,
         "asset_files": len(planned),

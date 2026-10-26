@@ -37,12 +37,16 @@ No Git setup or model is required. PMT projects with preview fixtures and plain 
 
 ### Personal-data Flow
 
-Currently **CanvasMaster on macOS only**, with app dependencies installed in its `.venv`. Other projects need a supported snapshot adapter. Add to `project-flow.toml`:
+On macOS, the SQLite snapshot adapter supports projects with an explicit offline preview entrypoint and installed Python dependencies. Include that entrypoint in `[project].include`, then configure:
 
 ```toml
 [personal]
-adapter = "canvasmaster"
-source = "~/Library/Application Support/CanvasOptimizer"
+adapter = "sqlite"
+source = "/absolute/path/to/your/app/data"
+database = "app.sqlite3"
+assets = ["objects"] # Only the asset folders needed by this preview
+python = ".venv/bin/python" # Project-relative; nested .venv directories also work
+entrypoint = "scripts/flow_personal.py"
 ```
 
 ```bash
@@ -52,6 +56,8 @@ localdev-mlx flow stop --personal    # Discard preview data; keep evidence
 ```
 
 This mode uses an offline, sandboxed **copy**—never writes back to live data. First open needs time and disk space. Stop/Refresh discards preview edits. Sync, background jobs, and app model operations are disabled. Captures and changes stay separate from sample mode.
+
+The entrypoint receives the port as its sole argument and runs from copied source with isolated Python (`-I`). It must explicitly import that copied source, read/write only `PROJECT_FLOW_DATA`, bind `127.0.0.1`, and disable background workers, scheduling, sync and account access. Flow makes a consistent SQLite backup and copies only named asset directories; it does not copy credentials, browser profiles, old backups or the entire live data folder. The OS sandbox denies live-storage access, child processes and outbound networking. Unsupported platforms fail without an unsafe fallback. This adapter does not support arbitrary non-SQLite databases.
 
 ## Commands
 

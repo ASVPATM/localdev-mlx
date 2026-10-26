@@ -2,7 +2,7 @@
 
 ## 0.6.0 (unreleased)
 
-- Adds Personal-data Flow for CanvasMaster on macOS: an isolated offline copy, separate captures, and no live-data write-back.
+- Adds Personal-data Flow for SQLite-backed Python apps on macOS: explicit database/assets and copied offline entrypoint, separate captures, and no live-data write-back.
 - Adds **Clear all changes** beside **Clear all app parts**. Exported handoffs are kept.
 - Adds questions and shared-behavior checks to handoffs.
 - Keeps existing Flow servers controllable after upgrades. Setup and preview fixes are listed below.

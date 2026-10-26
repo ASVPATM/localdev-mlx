@@ -27,8 +27,8 @@ def personal_config(tmp_path, monkeypatch):
     source = tmp_path.resolve() / "live"
     root.mkdir()
     source.mkdir()
-    (root / "src/canvas_optimizer").mkdir(parents=True)
-    (root / "src/canvas_optimizer/web.py").write_text("# synthetic app\n")
+    (root / "src").mkdir(parents=True)
+    (root / "src/preview.py").write_text("# synthetic offline entrypoint\n")
     (root / ".venv/bin").mkdir(parents=True)
     (root / ".venv/bin/python").symlink_to(sys.executable)
     with sqlite3.connect(source / "app.sqlite3") as conn:
@@ -40,7 +40,13 @@ def personal_config(tmp_path, monkeypatch):
     (source / "runtime").mkdir()
     (source / "runtime/browser-state").write_text("must not copy")
     monkeypatch.setattr(personal, "require_sandbox", lambda: None)
-    return Config(root, personal_adapter="canvasmaster", personal_source=str(source))
+    return Config(
+        root,
+        personal_adapter="sqlite",
+        personal_source=str(source),
+        personal_assets=("objects",),
+        personal_entrypoint="src/preview.py",
+    )
 
 
 def test_config_separates_modes_and_does_not_inherit_secrets(personal_config, monkeypatch):
@@ -51,14 +57,14 @@ def test_config_separates_modes_and_does_not_inherit_secrets(personal_config, mo
     assert config.preview_kind == "web" and config.preview_mutations
     assert not config.autodetected and not config.capture_narrow
     assert config.command(config.preview, port=12345)[-1] == "12345"
-    monkeypatch.setenv("CANVAS_TOKEN", "not-inherited")
+    monkeypatch.setenv("APP_TOKEN", "not-inherited")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "not-inherited")
     environment = config.environment(config.root / "copy")
-    assert "CANVAS_TOKEN" not in environment and "AWS_SECRET_ACCESS_KEY" not in environment
+    assert "APP_TOKEN" not in environment and "AWS_SECRET_ACCESS_KEY" not in environment
     assert environment["PROJECT_FLOW_PERSONAL"] == "1"
     assert environment["HOME"] == str(config.root / "copy/.flow-home")
     (original.root / "project-flow.toml").write_text(
-        '[personal]\nadapter="canvasmaster"\nsource=' + json.dumps(original.personal_source)
+        '[personal]\nadapter="sqlite"\nsource=' + json.dumps(original.personal_source)
     )
     assert load_config(original.root).personal_source == original.personal_source
 
@@ -85,6 +91,83 @@ def test_unsupported_os_never_falls_back(monkeypatch):
     monkeypatch.setattr(personal.sys, "platform", "linux")
     with pytest.raises(ValueError, match="no unsafe fallback"):
         personal.require_sandbox()
+
+
+@pytest.mark.parametrize(
+    "database", ["../app.sqlite3", "credentials.sqlite3", "nested/app.sqlite3", "app.txt"]
+)
+def test_database_selection_is_explicit_and_bounded(personal_config, database):
+    with pytest.raises(ValueError):
+        personal.for_mode(replace(personal_config, personal_database=database), "personal")
+
+
+def test_generic_database_name_and_nested_dependencies(personal_config):
+    root = personal_config.root
+    nested = root / "package/.venv/bin"
+    nested.mkdir(parents=True)
+    (nested / "python").symlink_to(sys.executable)
+    source = Path(personal_config.personal_source)
+    (source / "app.sqlite3").rename(source / "opportunities.sqlite3")
+    config = personal.for_mode(
+        replace(
+            personal_config,
+            personal_database="opportunities.sqlite3",
+            personal_python="package/.venv/bin/python",
+        ),
+        "personal",
+    )
+    assert config.command(config.preview, port=12345)[0] == str(nested / "python")
+    workspace = root / "workspace"
+    workspace.mkdir()
+    record = personal.prepare_snapshot(config, workspace, threading.Event())
+    assert record["database"] == "opportunities.sqlite3"
+    assert (workspace / ".flow-data/opportunities.sqlite3").is_file()
+    assert not (workspace / ".flow-data/app.sqlite3").exists()
+
+
+@pytest.mark.parametrize("entrypoint", ["../outside.py", ".venv/preview.py", "src/missing.py"])
+def test_entrypoint_must_be_included_copied_source(personal_config, entrypoint):
+    with pytest.raises(ValueError):
+        personal.for_mode(replace(personal_config, personal_entrypoint=entrypoint), "personal")
+
+
+def test_copied_python_launcher_discovers_framework_without_executing_it(tmp_path, monkeypatch):
+    python = tmp_path / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"synthetic copied launcher")
+    framework = Path(
+        "/opt/homebrew/Cellar/python@3.99/3.99.0/Frameworks/Python.framework/Versions/3.99/Python"
+    )
+    library = Path("/opt/homebrew/opt/example/lib/libexample.dylib")
+    original_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path, "is_file", lambda path: path in {framework, library} or original_is_file(path)
+    )
+    calls = []
+
+    def metadata(command, **kwargs):
+        calls.append(command)
+        assert command[:2] == ["/usr/bin/otool", "-L"]
+        assert kwargs["timeout"] == 15
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                f"\t{framework} (compatibility version 3.99.0, current version 3.99.0)\n"
+                f"\t{library} (compatibility version 1.0.0, current version 1.0.0)\n"
+                "\t/private/tmp/untrusted.dylib (compatibility version 1.0.0)\n"
+            )
+            if len(calls) == 1
+            else "",
+        )
+
+    monkeypatch.setattr(personal.subprocess, "run", metadata)
+    roots = personal.runtime_read_roots(python)
+    assert framework.parent in roots
+    assert library in roots
+    assert python.parent.parent in roots
+    assert Path("/private/tmp/untrusted.dylib") not in roots
+    assert len(calls) == 2
 
 
 def test_consistent_wal_snapshot_never_writes_back(personal_config):

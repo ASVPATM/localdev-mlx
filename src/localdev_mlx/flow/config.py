@@ -49,6 +49,10 @@ class Config:
     mode: str = "sample"
     personal_adapter: str = ""
     personal_source: str = ""
+    personal_database: str = "app.sqlite3"
+    personal_assets: tuple[str, ...] = ()
+    personal_entrypoint: str = ""
+    personal_python: str = ".venv/bin/python"
     include: tuple[str, ...] = (
         "src",
         "tests",
@@ -189,6 +193,8 @@ class Config:
         project_python = (
             self.root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         )
+        if self.mode == "personal":
+            project_python = self.root / self.personal_python
         return [
             s.replace("{python}", sys.executable)
             .replace(
@@ -199,7 +205,7 @@ class Config:
             .replace("{scenario}", scenario)
             .replace("{seed}", str(seed))
             .replace("{pmt_preview}", str(Path(__file__).with_name("pmt_preview.py")))
-            .replace("{personal_preview}", str(Path(__file__).with_name("canvas_personal.py")))
+            .replace("{personal_preview}", self.personal_entrypoint)
             for s in argv
         ]
 
@@ -233,6 +239,13 @@ def load_config(root: Path) -> Config:
         raise ValueError("project-flow.toml must be a regular, bounded local configuration file")
     raw = tomllib.loads(file.read_text())
     project, model = raw.get("project", {}), raw.get("model", {})
+    assets = raw.get("personal", {}).get("assets", [])
+    if (
+        not isinstance(assets, list)
+        or len(assets) > 32
+        or any(not isinstance(x, str) for x in assets)
+    ):
+        raise ValueError("personal.assets must be a list of at most 32 directory names")
 
     def commands(name):
         values = project.get(name, [])
@@ -250,6 +263,10 @@ def load_config(root: Path) -> Config:
         root=root,
         personal_adapter=str(raw.get("personal", {}).get("adapter", "")),
         personal_source=str(raw.get("personal", {}).get("source", "")),
+        personal_database=str(raw.get("personal", {}).get("database", "app.sqlite3")),
+        personal_assets=tuple(assets),
+        personal_entrypoint=str(raw.get("personal", {}).get("entrypoint", "")),
+        personal_python=str(raw.get("personal", {}).get("python", ".venv/bin/python")),
         include=tuple(project.get("include", Config.__dataclass_fields__["include"].default)),
         exclude=tuple(project.get("exclude", [])),
         allowed_source_files=tuple(project.get("allowed_source_files", [])),
